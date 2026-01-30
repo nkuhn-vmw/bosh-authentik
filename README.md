@@ -1,8 +1,25 @@
 # BOSH Release for Authentik
 
+[![Deploy Authentik on BOSH/vSphere](https://github.com/nkuhn-vmw/bosh-authentik/actions/workflows/deploy.yml/badge.svg)](https://github.com/nkuhn-vmw/bosh-authentik/actions/workflows/deploy.yml)
+
 This BOSH release deploys [authentik](https://goauthentik.io/), an open-source Identity Provider (IdP) supporting SAML, OAuth2/OIDC, LDAP, RADIUS, and more.
 
 This release runs authentik **natively** without Docker, packaging Python and all dependencies directly.
+
+## Quick Start with GitHub Actions
+
+The fastest way to deploy is using our automated GitHub Actions workflow:
+
+1. Fork this repository
+2. Configure [GitHub Secrets](docs/GITHUB_ACTIONS_SETUP.md#step-1-configure-github-secrets) for your vSphere environment
+3. Run the workflow: **Actions → Deploy Authentik on BOSH/vSphere → Run workflow**
+
+This will automatically:
+- Bootstrap a BOSH Director on vSphere using [bosh-bootloader](https://github.com/cloudfoundry/bosh-bootloader)
+- Build the authentik release with all dependencies
+- Deploy authentik with PostgreSQL
+
+See the [GitHub Actions Setup Guide](docs/GITHUB_ACTIONS_SETUP.md) for detailed instructions.
 
 ## Components
 
@@ -296,6 +313,11 @@ bosh upload-release
 bosh deploy manifests/authentik.yml
 ```
 
+## Documentation
+
+- [Getting Started Guide](docs/GETTING_STARTED.md) - Step-by-step manual deployment
+- [GitHub Actions Setup](docs/GITHUB_ACTIONS_SETUP.md) - Automated CI/CD deployment on vSphere
+
 ## License
 
 Apache License 2.0
@@ -305,3 +327,4 @@ Apache License 2.0
 - [Authentik Documentation](https://docs.goauthentik.io/)
 - [Authentik GitHub](https://github.com/goauthentik/authentik)
 - [BOSH Documentation](https://bosh.io/docs/)
+- [bosh-bootloader](https://github.com/cloudfoundry/bosh-bootloader) - BOSH Director bootstrapping

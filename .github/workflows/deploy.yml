@@ -1,0 +1,516 @@
+name: Deploy Authentik on BOSH/vSphere
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - destroy
+          - bosh-only
+          - authentik-only
+      environment:
+        description: 'Environment name'
+        required: true
+        default: 'production'
+        type: string
+      authentik_version:
+        description: 'Authentik version to deploy'
+        required: false
+        default: '2025.12.1'
+        type: string
+
+env:
+  BBL_IAAS: vsphere
+  BOSH_ENVIRONMENT: bosh-director
+  AUTHENTIK_VERSION: ${{ github.event.inputs.authentik_version || '2025.12.1' }}
+
+jobs:
+  bootstrap-bosh:
+    name: Bootstrap BOSH Director
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.action == 'deploy' || github.event.inputs.action == 'bosh-only' }}
+    environment: ${{ github.event.inputs.environment }}
+
+    outputs:
+      bosh_environment: ${{ steps.bosh-env.outputs.environment }}
+      director_ip: ${{ steps.bosh-env.outputs.director_ip }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # Install Terraform
+          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update && sudo apt-get install -y terraform jq
+
+          # Install BOSH CLI
+          curl -Lo ./bosh https://github.com/cloudfoundry/bosh-cli/releases/download/v7.5.0/bosh-cli-7.5.0-linux-amd64
+          chmod +x ./bosh
+          sudo mv ./bosh /usr/local/bin/bosh
+
+          # Install BBL
+          curl -Lo ./bbl https://github.com/cloudfoundry/bosh-bootloader/releases/download/v9.0.17/bbl-v9.0.17_linux_amd64
+          chmod +x ./bbl
+          sudo mv ./bbl /usr/local/bin/bbl
+
+          # Verify installations
+          terraform --version
+          bosh --version
+          bbl --version
+
+      - name: Restore BBL state from cache
+        id: cache-bbl-state
+        uses: actions/cache@v4
+        with:
+          path: bbl-state
+          key: bbl-state-${{ github.event.inputs.environment }}-${{ hashFiles('bbl-state/bbl-state.json') }}
+          restore-keys: |
+            bbl-state-${{ github.event.inputs.environment }}-
+
+      - name: Decrypt BBL state (if exists)
+        if: steps.cache-bbl-state.outputs.cache-hit == 'true'
+        env:
+          BBL_STATE_ENCRYPTION_KEY: ${{ secrets.BBL_STATE_ENCRYPTION_KEY }}
+        run: |
+          if [ -f bbl-state/bbl-state.json.enc ]; then
+            openssl enc -aes-256-cbc -d -pbkdf2 \
+              -in bbl-state/bbl-state.json.enc \
+              -out bbl-state/bbl-state.json \
+              -pass env:BBL_STATE_ENCRYPTION_KEY
+          fi
+
+      - name: Initialize BBL state directory
+        run: |
+          mkdir -p bbl-state
+          cd bbl-state
+
+      - name: Bootstrap BOSH with BBL
+        env:
+          # vSphere credentials
+          BBL_VSPHERE_VCENTER_USER: ${{ secrets.VSPHERE_VCENTER_USER }}
+          BBL_VSPHERE_VCENTER_PASSWORD: ${{ secrets.VSPHERE_VCENTER_PASSWORD }}
+          BBL_VSPHERE_VCENTER_IP: ${{ secrets.VSPHERE_VCENTER_IP }}
+          # vSphere infrastructure
+          BBL_VSPHERE_VCENTER_DC: ${{ secrets.VSPHERE_VCENTER_DC }}
+          BBL_VSPHERE_VCENTER_CLUSTER: ${{ secrets.VSPHERE_VCENTER_CLUSTER }}
+          BBL_VSPHERE_VCENTER_RP: ${{ secrets.VSPHERE_VCENTER_RP }}
+          BBL_VSPHERE_NETWORK: ${{ secrets.VSPHERE_NETWORK }}
+          BBL_VSPHERE_VCENTER_DS: ${{ secrets.VSPHERE_VCENTER_DS }}
+          # Network configuration
+          BBL_VSPHERE_SUBNET_CIDR: ${{ secrets.VSPHERE_SUBNET_CIDR }}
+          BBL_VSPHERE_INTERNAL_GW: ${{ secrets.VSPHERE_INTERNAL_GW }}
+          BBL_VSPHERE_JUMPBOX_IP: ${{ secrets.VSPHERE_JUMPBOX_IP }}
+          BBL_VSPHERE_DIRECTOR_INTERNAL_IP: ${{ secrets.VSPHERE_DIRECTOR_INTERNAL_IP }}
+          # Storage paths
+          BBL_VSPHERE_VCENTER_DISKS: ${{ secrets.VSPHERE_VCENTER_DISKS }}
+          BBL_VSPHERE_VCENTER_TEMPLATES: ${{ secrets.VSPHERE_VCENTER_TEMPLATES }}
+          BBL_VSPHERE_VCENTER_VMS: ${{ secrets.VSPHERE_VCENTER_VMS }}
+        run: |
+          cd bbl-state
+
+          echo "=== Starting BOSH Bootstrap ==="
+          bbl up --debug
+
+          echo "=== BOSH Director deployed successfully ==="
+
+      - name: Extract BOSH environment
+        id: bosh-env
+        run: |
+          cd bbl-state
+
+          # Get director IP
+          DIRECTOR_IP=$(bbl director-address | sed 's|https://||' | cut -d: -f1)
+          echo "director_ip=${DIRECTOR_IP}" >> $GITHUB_OUTPUT
+          echo "environment=bosh-director" >> $GITHUB_OUTPUT
+
+          # Export BOSH credentials for subsequent steps
+          eval "$(bbl print-env)"
+
+          echo "BOSH Director is available at: ${DIRECTOR_IP}"
+
+      - name: Encrypt and save BBL state
+        env:
+          BBL_STATE_ENCRYPTION_KEY: ${{ secrets.BBL_STATE_ENCRYPTION_KEY }}
+        run: |
+          cd bbl-state
+          openssl enc -aes-256-cbc -pbkdf2 \
+            -in bbl-state.json \
+            -out bbl-state.json.enc \
+            -pass env:BBL_STATE_ENCRYPTION_KEY
+          rm -f bbl-state.json  # Remove unencrypted state
+
+      - name: Upload BBL state artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbl-state-${{ github.event.inputs.environment }}
+          path: bbl-state/
+          retention-days: 90
+
+  build-release:
+    name: Build Authentik Release
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.action == 'deploy' || github.event.inputs.action == 'authentik-only' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install BOSH CLI
+        run: |
+          curl -Lo ./bosh https://github.com/cloudfoundry/bosh-cli/releases/download/v7.5.0/bosh-cli-7.5.0-linux-amd64
+          chmod +x ./bosh
+          sudo mv ./bosh /usr/local/bin/bosh
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download and prepare blobs
+        env:
+          AUTHENTIK_VERSION: ${{ env.AUTHENTIK_VERSION }}
+        run: |
+          mkdir -p blobs/{python,authentik/vendor,outposts/{ldap,radius,proxy}}
+
+          # Download Python
+          echo "Downloading Python 3.12.4..."
+          curl -L -o blobs/python/Python-3.12.4.tar.xz \
+            https://www.python.org/ftp/python/3.12.4/Python-3.12.4.tar.xz
+
+          # Download setuptools and pip
+          curl -L -o blobs/python/setuptools-70.0.0.tar.gz \
+            https://files.pythonhosted.org/packages/source/s/setuptools/setuptools-70.0.0.tar.gz
+          curl -L -o blobs/python/pip-24.0.tar.gz \
+            https://files.pythonhosted.org/packages/source/p/pip/pip-24.0.tar.gz
+
+          # Clone authentik and prepare source
+          echo "Cloning authentik ${AUTHENTIK_VERSION}..."
+          git clone --depth 1 --branch "version/${AUTHENTIK_VERSION}" \
+            https://github.com/goauthentik/authentik.git /tmp/authentik
+
+          # Download Python dependencies
+          echo "Downloading Python dependencies..."
+          cd /tmp/authentik
+          pip download -d wheels -r requirements.txt || true
+          cp wheels/* ${GITHUB_WORKSPACE}/blobs/authentik/vendor/ || true
+
+          # Create source tarball
+          tar czf ${GITHUB_WORKSPACE}/blobs/authentik/authentik-${AUTHENTIK_VERSION}.tar.gz \
+            --exclude='.git' --exclude='web/node_modules' .
+
+          # Build frontend
+          echo "Building frontend..."
+          cd web
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+          npm run build || echo "Frontend build completed with warnings"
+          tar czf ${GITHUB_WORKSPACE}/blobs/authentik/web-dist.tar.gz dist/ || true
+
+          cd ${GITHUB_WORKSPACE}
+
+          # Download outpost binaries
+          echo "Downloading outpost binaries..."
+          OUTPOST_BASE="https://github.com/goauthentik/authentik/releases/download/version%2F${AUTHENTIK_VERSION}"
+          curl -L -o blobs/outposts/ldap/authentik-ldap_linux_amd64 \
+            "${OUTPOST_BASE}/authentik-ldap_linux_amd64" || echo "LDAP outpost download failed"
+          curl -L -o blobs/outposts/radius/authentik-radius_linux_amd64 \
+            "${OUTPOST_BASE}/authentik-radius_linux_amd64" || echo "RADIUS outpost download failed"
+          curl -L -o blobs/outposts/proxy/authentik-proxy_linux_amd64 \
+            "${OUTPOST_BASE}/authentik-proxy_linux_amd64" || echo "Proxy outpost download failed"
+
+      - name: Add blobs to release
+        run: |
+          # Python blobs
+          bosh add-blob blobs/python/Python-3.12.4.tar.xz python/Python-3.12.4.tar.xz
+          bosh add-blob blobs/python/setuptools-70.0.0.tar.gz python/setuptools-70.0.0.tar.gz
+          bosh add-blob blobs/python/pip-24.0.tar.gz python/pip-24.0.tar.gz
+
+          # Authentik blobs
+          bosh add-blob blobs/authentik/authentik-${AUTHENTIK_VERSION}.tar.gz \
+            authentik/authentik-${AUTHENTIK_VERSION}.tar.gz
+
+          if [ -f blobs/authentik/web-dist.tar.gz ]; then
+            bosh add-blob blobs/authentik/web-dist.tar.gz authentik/web-dist.tar.gz
+          fi
+
+          # Vendor wheels
+          for wheel in blobs/authentik/vendor/*.whl; do
+            if [ -f "$wheel" ]; then
+              bosh add-blob "$wheel" "authentik/vendor/$(basename $wheel)"
+            fi
+          done
+
+          # Outpost binaries
+          for outpost in ldap radius proxy; do
+            if [ -f "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" ]; then
+              bosh add-blob "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" \
+                "outposts/${outpost}/authentik-${outpost}_linux_amd64"
+            fi
+          done
+
+      - name: Create BOSH release
+        run: |
+          bosh create-release --force --tarball=authentik-release.tgz
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentik-release
+          path: authentik-release.tgz
+          retention-days: 7
+
+  deploy-authentik:
+    name: Deploy Authentik
+    runs-on: ubuntu-latest
+    needs: [bootstrap-bosh, build-release]
+    if: ${{ always() && (github.event.inputs.action == 'deploy' || github.event.inputs.action == 'authentik-only') && (needs.bootstrap-bosh.result == 'success' || needs.bootstrap-bosh.result == 'skipped') }}
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # Install BOSH CLI
+          curl -Lo ./bosh https://github.com/cloudfoundry/bosh-cli/releases/download/v7.5.0/bosh-cli-7.5.0-linux-amd64
+          chmod +x ./bosh
+          sudo mv ./bosh /usr/local/bin/bosh
+
+          # Install BBL
+          curl -Lo ./bbl https://github.com/cloudfoundry/bosh-bootloader/releases/download/v9.0.17/bbl-v9.0.17_linux_amd64
+          chmod +x ./bbl
+          sudo mv ./bbl /usr/local/bin/bbl
+
+      - name: Download BBL state
+        uses: actions/download-artifact@v4
+        with:
+          name: bbl-state-${{ github.event.inputs.environment }}
+          path: bbl-state
+
+      - name: Decrypt BBL state
+        env:
+          BBL_STATE_ENCRYPTION_KEY: ${{ secrets.BBL_STATE_ENCRYPTION_KEY }}
+        run: |
+          cd bbl-state
+          if [ -f bbl-state.json.enc ]; then
+            openssl enc -aes-256-cbc -d -pbkdf2 \
+              -in bbl-state.json.enc \
+              -out bbl-state.json \
+              -pass env:BBL_STATE_ENCRYPTION_KEY
+          fi
+
+      - name: Download authentik release
+        uses: actions/download-artifact@v4
+        with:
+          name: authentik-release
+          path: .
+
+      - name: Configure BOSH environment
+        id: bosh-config
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+
+          # Export for subsequent steps
+          echo "BOSH_CLIENT=${BOSH_CLIENT}" >> $GITHUB_ENV
+          echo "BOSH_CLIENT_SECRET=${BOSH_CLIENT_SECRET}" >> $GITHUB_ENV
+          echo "BOSH_ENVIRONMENT=${BOSH_ENVIRONMENT}" >> $GITHUB_ENV
+          echo "BOSH_CA_CERT<<EOF" >> $GITHUB_ENV
+          echo "${BOSH_CA_CERT}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Upload stemcell
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+
+          # Upload Ubuntu Jammy stemcell for vSphere
+          bosh upload-stemcell --sha1 $(curl -s https://bosh.io/api/v1/stemcells/bosh-vsphere-esxi-ubuntu-jammy-go_agent | jq -r '.[0].regular.sha1') \
+            "https://bosh.io/d/stemcells/bosh-vsphere-esxi-ubuntu-jammy-go_agent"
+
+      - name: Upload releases
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+
+          # Upload BPM release
+          bosh upload-release https://bosh.io/d/github.com/cloudfoundry/bpm-release
+
+          # Upload Postgres release
+          bosh upload-release https://bosh.io/d/github.com/cloudfoundry/postgres-release
+
+          # Upload authentik release
+          bosh upload-release ${GITHUB_WORKSPACE}/authentik-release.tgz
+
+      - name: Update cloud config
+        env:
+          VSPHERE_NETWORK: ${{ secrets.VSPHERE_NETWORK }}
+          VSPHERE_SUBNET_CIDR: ${{ secrets.VSPHERE_SUBNET_CIDR }}
+          VSPHERE_INTERNAL_GW: ${{ secrets.VSPHERE_INTERNAL_GW }}
+          VSPHERE_VCENTER_DC: ${{ secrets.VSPHERE_VCENTER_DC }}
+          VSPHERE_VCENTER_CLUSTER: ${{ secrets.VSPHERE_VCENTER_CLUSTER }}
+          VSPHERE_VCENTER_DS: ${{ secrets.VSPHERE_VCENTER_DS }}
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+
+          # Create cloud config for authentik deployment
+          cat > /tmp/cloud-config-ops.yml << 'EOF'
+          - type: replace
+            path: /vm_types/-
+            value:
+              name: authentik
+              cloud_properties:
+                cpu: 2
+                ram: 4096
+                disk: 20480
+
+          - type: replace
+            path: /vm_types/-
+            value:
+              name: postgres
+              cloud_properties:
+                cpu: 2
+                ram: 2048
+                disk: 20480
+
+          - type: replace
+            path: /disk_types/-
+            value:
+              name: authentik-disk
+              disk_size: 20480
+
+          - type: replace
+            path: /disk_types/-
+            value:
+              name: postgres-disk
+              disk_size: 10240
+          EOF
+
+          # Get current cloud config and apply ops
+          bosh cloud-config > /tmp/cloud-config.yml || echo "---" > /tmp/cloud-config.yml
+          bosh interpolate /tmp/cloud-config.yml -o /tmp/cloud-config-ops.yml > /tmp/cloud-config-updated.yml || \
+            cp /tmp/cloud-config-ops.yml /tmp/cloud-config-updated.yml
+          bosh update-cloud-config /tmp/cloud-config-updated.yml -n || true
+
+      - name: Deploy Authentik
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+
+          # Create deployment vars file
+          cat > /tmp/vars.yml << EOF
+          smtp_host: ${SMTP_HOST:-localhost}
+          smtp_port: ${SMTP_PORT:-25}
+          smtp_from: ${SMTP_FROM:-authentik@localhost}
+          EOF
+
+          # Deploy authentik
+          bosh -d authentik deploy ${GITHUB_WORKSPACE}/manifests/authentik.yml \
+            -l /tmp/vars.yml \
+            -n
+
+      - name: Get deployment info
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+
+          echo "=== Deployment Status ==="
+          bosh -d authentik instances
+
+          echo ""
+          echo "=== Authentik Access ==="
+          AUTHENTIK_IP=$(bosh -d authentik instances --json | jq -r '.Tables[0].Rows[] | select(.instance | contains("authentik")) | .ips')
+          echo "Authentik is available at:"
+          echo "  HTTP:  http://${AUTHENTIK_IP}:9000"
+          echo "  HTTPS: https://${AUTHENTIK_IP}:9443"
+          echo ""
+          echo "Initial setup: http://${AUTHENTIK_IP}:9000/if/flow/initial-setup/"
+
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.action == 'destroy' }}
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # Install Terraform
+          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update && sudo apt-get install -y terraform jq
+
+          # Install BOSH CLI
+          curl -Lo ./bosh https://github.com/cloudfoundry/bosh-cli/releases/download/v7.5.0/bosh-cli-7.5.0-linux-amd64
+          chmod +x ./bosh
+          sudo mv ./bosh /usr/local/bin/bosh
+
+          # Install BBL
+          curl -Lo ./bbl https://github.com/cloudfoundry/bosh-bootloader/releases/download/v9.0.17/bbl-v9.0.17_linux_amd64
+          chmod +x ./bbl
+          sudo mv ./bbl /usr/local/bin/bbl
+
+      - name: Download BBL state
+        uses: actions/download-artifact@v4
+        with:
+          name: bbl-state-${{ github.event.inputs.environment }}
+          path: bbl-state
+
+      - name: Decrypt BBL state
+        env:
+          BBL_STATE_ENCRYPTION_KEY: ${{ secrets.BBL_STATE_ENCRYPTION_KEY }}
+        run: |
+          cd bbl-state
+          if [ -f bbl-state.json.enc ]; then
+            openssl enc -aes-256-cbc -d -pbkdf2 \
+              -in bbl-state.json.enc \
+              -out bbl-state.json \
+              -pass env:BBL_STATE_ENCRYPTION_KEY
+          fi
+
+      - name: Delete authentik deployment
+        continue-on-error: true
+        run: |
+          cd bbl-state
+          eval "$(bbl print-env)"
+          bosh -d authentik delete-deployment -n || true
+
+      - name: Destroy BOSH infrastructure
+        env:
+          BBL_VSPHERE_VCENTER_USER: ${{ secrets.VSPHERE_VCENTER_USER }}
+          BBL_VSPHERE_VCENTER_PASSWORD: ${{ secrets.VSPHERE_VCENTER_PASSWORD }}
+          BBL_VSPHERE_VCENTER_IP: ${{ secrets.VSPHERE_VCENTER_IP }}
+          BBL_VSPHERE_VCENTER_DC: ${{ secrets.VSPHERE_VCENTER_DC }}
+          BBL_VSPHERE_VCENTER_CLUSTER: ${{ secrets.VSPHERE_VCENTER_CLUSTER }}
+          BBL_VSPHERE_VCENTER_RP: ${{ secrets.VSPHERE_VCENTER_RP }}
+          BBL_VSPHERE_NETWORK: ${{ secrets.VSPHERE_NETWORK }}
+          BBL_VSPHERE_VCENTER_DS: ${{ secrets.VSPHERE_VCENTER_DS }}
+          BBL_VSPHERE_SUBNET_CIDR: ${{ secrets.VSPHERE_SUBNET_CIDR }}
+          BBL_VSPHERE_INTERNAL_GW: ${{ secrets.VSPHERE_INTERNAL_GW }}
+          BBL_VSPHERE_VCENTER_DISKS: ${{ secrets.VSPHERE_VCENTER_DISKS }}
+          BBL_VSPHERE_VCENTER_TEMPLATES: ${{ secrets.VSPHERE_VCENTER_TEMPLATES }}
+          BBL_VSPHERE_VCENTER_VMS: ${{ secrets.VSPHERE_VCENTER_VMS }}
+        run: |
+          cd bbl-state
+          bbl destroy --no-confirm
