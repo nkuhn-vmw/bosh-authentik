@@ -1,6 +1,6 @@
 # BOSH Release for Authentik
 
-[![Deploy Authentik on BOSH/vSphere](https://github.com/nkuhn-vmw/bosh-authentik/actions/workflows/deploy.yml/badge.svg)](https://github.com/nkuhn-vmw/bosh-authentik/actions/workflows/deploy.yml)
+[![Deploy Authentik on BOSH/vSphere](https://github.com/kuhn-labs/bosh-authentik/actions/workflows/deploy.yml/badge.svg)](https://github.com/kuhn-labs/bosh-authentik/actions/workflows/deploy.yml)
 
 This BOSH release deploys [authentik](https://goauthentik.io/), an open-source Identity Provider (IdP) supporting SAML, OAuth2/OIDC, LDAP, RADIUS, and more.
 
