@@ -1,0 +1,128 @@
+#!/bin/bash
+#
+# Authentik Smoke Tests
+# This errand verifies that the Authentik deployment is healthy
+#
+set -e
+
+echo "=========================================="
+echo "     Authentik Smoke Tests               "
+echo "=========================================="
+echo ""
+
+# Configuration
+<%
+  # Get authentik host from link or property
+  if_link('authentik') do |authentik_link|
+    authentik_host = authentik_link.instances.first.address
+    authentik_port = authentik_link.p('port', 9000)
+    authentik_https_port = authentik_link.p('https_port', 9443)
+  end.else do
+    authentik_host = p('authentik.host')
+    authentik_port = p('authentik.port')
+    authentik_https_port = p('authentik.https_port')
+  end
+-%>
+AUTHENTIK_HOST="<%= authentik_host %>"
+AUTHENTIK_PORT="<%= authentik_port %>"
+AUTHENTIK_HTTPS_PORT="<%= authentik_https_port %>"
+TIMEOUT="<%= p('smoke_tests.timeout') %>"
+SKIP_SSL="<%= p('smoke_tests.skip_ssl_validation') %>"
+
+# Curl options
+CURL_OPTS="-s -f --connect-timeout ${TIMEOUT} --max-time ${TIMEOUT}"
+if [ "$SKIP_SSL" = "true" ]; then
+  CURL_OPTS="$CURL_OPTS -k"
+fi
+
+# Test counter
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+# Test function
+run_test() {
+  local test_name="$1"
+  local test_command="$2"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  echo -n "Running: ${test_name}... "
+
+  if eval "$test_command" > /dev/null 2>&1; then
+    echo "PASSED"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+    return 0
+  else
+    echo "FAILED"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    return 1
+  fi
+}
+
+# Check if host is configured
+if [ -z "$AUTHENTIK_HOST" ]; then
+  echo "ERROR: Authentik host not configured"
+  echo "Please ensure authentik-server is deployed and linked"
+  exit 1
+fi
+
+echo "Target: ${AUTHENTIK_HOST}"
+echo "HTTP Port: ${AUTHENTIK_PORT}"
+echo "HTTPS Port: ${AUTHENTIK_HTTPS_PORT}"
+echo ""
+echo "------------------------------------------"
+echo ""
+
+# Test 1: HTTP Health Check
+run_test "HTTP Health Check" \
+  "curl ${CURL_OPTS} http://${AUTHENTIK_HOST}:${AUTHENTIK_PORT}/-/health/live/"
+
+# Test 2: HTTPS Health Check (if configured)
+if [ "$AUTHENTIK_HTTPS_PORT" != "0" ]; then
+  run_test "HTTPS Health Check" \
+    "curl ${CURL_OPTS} https://${AUTHENTIK_HOST}:${AUTHENTIK_HTTPS_PORT}/-/health/live/"
+fi
+
+# Test 3: API Endpoint Check
+run_test "API Endpoint Check" \
+  "curl ${CURL_OPTS} http://${AUTHENTIK_HOST}:${AUTHENTIK_PORT}/api/v3/root/config/"
+
+# Test 4: Flow Executor Check
+run_test "Flow Executor Check" \
+  "curl ${CURL_OPTS} -o /dev/null -w '%{http_code}' http://${AUTHENTIK_HOST}:${AUTHENTIK_PORT}/if/flow/initial-setup/ | grep -E '^(200|302)$'"
+
+# Test 5: Static Assets Check
+run_test "Static Assets Check" \
+  "curl ${CURL_OPTS} http://${AUTHENTIK_HOST}:${AUTHENTIK_PORT}/static/dist/assets/"
+
+# Test 6: Metrics Endpoint Check
+run_test "Prometheus Metrics Check" \
+  "curl ${CURL_OPTS} http://${AUTHENTIK_HOST}:9300/metrics | grep -q 'authentik_'"
+
+# Test 7: Database Connection Check (via ready endpoint)
+run_test "Database Connection Check" \
+  "curl ${CURL_OPTS} http://${AUTHENTIK_HOST}:${AUTHENTIK_PORT}/-/health/ready/"
+
+echo ""
+echo "------------------------------------------"
+echo ""
+echo "=========================================="
+echo "           TEST RESULTS                  "
+echo "=========================================="
+echo ""
+echo "Tests Run:    ${TESTS_RUN}"
+echo "Tests Passed: ${TESTS_PASSED}"
+echo "Tests Failed: ${TESTS_FAILED}"
+echo ""
+
+if [ "$TESTS_FAILED" -gt 0 ]; then
+  echo "STATUS: FAILED"
+  echo ""
+  echo "Some smoke tests failed. Please check the Authentik deployment logs."
+  exit 1
+else
+  echo "STATUS: PASSED"
+  echo ""
+  echo "All smoke tests passed. Authentik is healthy!"
+  exit 0
+fi

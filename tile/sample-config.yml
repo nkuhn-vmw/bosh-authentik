@@ -1,0 +1,186 @@
+---
+# Sample Configuration for Authentik Tile
+#
+# This file can be used with the 'om configure-product' command to
+# configure the Authentik tile after staging.
+#
+# Usage:
+#   om configure-product -c sample-config.yml
+#
+# Modify the values below according to your environment.
+
+product-name: authentik
+
+product-properties:
+  # Authentik Core Configuration
+  .properties.log_level:
+    value: info
+  .properties.cookie_domain:
+    value: ""
+  .properties.disable_update_check:
+    value: true
+  .properties.impersonation:
+    value: true
+
+  # Database Configuration
+  # Options: 'internal' (use embedded PostgreSQL) or 'external'
+  .properties.database_type:
+    value: internal
+
+  # Uncomment and configure for external PostgreSQL:
+  # .properties.database_type:
+  #   value: external
+  # .properties.external_postgres_host:
+  #   value: postgres.example.com
+  # .properties.external_postgres_port:
+  #   value: 5432
+  # .properties.external_postgres_username:
+  #   value: authentik
+  # .properties.external_postgres_password:
+  #   value:
+  #     secret: your-postgres-password
+  # .properties.external_postgres_database:
+  #   value: authentik
+  # .properties.external_postgres_sslmode:
+  #   value: require
+
+  # Email (SMTP) Configuration
+  .properties.smtp_host:
+    value: smtp.example.com
+  .properties.smtp_port:
+    value: 587
+  .properties.smtp_from:
+    value: authentik@example.com
+  .properties.smtp_use_tls:
+    value: true
+  .properties.smtp_use_ssl:
+    value: false
+  .properties.smtp_timeout:
+    value: 10
+
+  # Uncomment for SMTP authentication:
+  # .properties.smtp_username:
+  #   value: smtp-user
+  # .properties.smtp_password:
+  #   value:
+  #     secret: your-smtp-password
+
+  # Storage Configuration
+  # Options: 'file' (local filesystem) or 's3'
+  .properties.storage_backend:
+    value: file
+
+  # Uncomment and configure for S3 storage:
+  # .properties.storage_backend:
+  #   value: s3
+  # .properties.s3_region:
+  #   value: us-east-1
+  # .properties.s3_bucket_name:
+  #   value: authentik-media
+  # .properties.s3_access_key:
+  #   value: AKIAIOSFODNN7EXAMPLE
+  # .properties.s3_secret_key:
+  #   value:
+  #     secret: your-s3-secret-key
+  # .properties.s3_use_ssl:
+  #   value: true
+  # Optional: Custom S3 endpoint for S3-compatible storage
+  # .properties.s3_endpoint:
+  #   value: https://s3.example.com
+
+  # Web Server Configuration
+  .properties.web_workers:
+    value: 2
+  .properties.web_threads:
+    value: 4
+  .properties.http_port:
+    value: 9000
+  .properties.https_port:
+    value: 9443
+  .properties.metrics_port:
+    value: 9300
+
+  # Worker Configuration
+  .properties.worker_concurrency:
+    value: 2
+
+  # Cache Configuration
+  .properties.cache_timeout:
+    value: 300
+  .properties.cache_timeout_flows:
+    value: 300
+  .properties.cache_timeout_policies:
+    value: 300
+
+  # Outpost Configuration (Optional)
+  .properties.enable_ldap_outpost:
+    value: false
+  .properties.enable_radius_outpost:
+    value: false
+  .properties.enable_proxy_outpost:
+    value: false
+  .properties.outpost_insecure:
+    value: false
+
+  # Configure outpost token after initial setup:
+  # .properties.outpost_token:
+  #   value:
+  #     secret: your-outpost-token
+
+# Network Configuration
+network-properties:
+  network:
+    name: default
+  other_availability_zones:
+    - name: az1
+  singleton_availability_zone:
+    name: az1
+
+# Resource Configuration
+resource-config:
+  # PostgreSQL Database (Internal)
+  postgres:
+    instances: automatic
+    persistent_disk:
+      size_mb: automatic
+    instance_type:
+      id: automatic
+
+  # Authentik Server
+  authentik-server:
+    instances: 1
+    persistent_disk:
+      size_mb: automatic
+    instance_type:
+      id: automatic
+
+  # Authentik Worker
+  authentik-worker:
+    instances: 1
+    persistent_disk:
+      size_mb: automatic
+    instance_type:
+      id: automatic
+
+  # Optional: LDAP Outpost
+  # authentik-ldap-outpost:
+  #   instances: 1
+  #   instance_type:
+  #     id: automatic
+
+  # Optional: RADIUS Outpost
+  # authentik-radius-outpost:
+  #   instances: 1
+  #   instance_type:
+  #     id: automatic
+
+  # Optional: Proxy Outpost
+  # authentik-proxy-outpost:
+  #   instances: 1
+  #   instance_type:
+  #     id: automatic
+
+# Errand Configuration
+errand-config:
+  smoke-tests:
+    post-deploy-state: true

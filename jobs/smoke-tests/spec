@@ -1,0 +1,29 @@
+---
+name: smoke-tests
+
+templates:
+  run.erb: bin/run
+
+packages: []
+
+consumes:
+  - name: authentik
+    type: authentik
+    optional: true
+
+properties:
+  authentik.host:
+    description: "Authentik server hostname (derived from link if not specified)"
+    default: ""
+  authentik.port:
+    description: "Authentik server HTTP port"
+    default: 9000
+  authentik.https_port:
+    description: "Authentik server HTTPS port"
+    default: 9443
+  smoke_tests.timeout:
+    description: "Timeout in seconds for health checks"
+    default: 30
+  smoke_tests.skip_ssl_validation:
+    description: "Skip SSL certificate validation"
+    default: true
