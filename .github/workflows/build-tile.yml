@@ -6,6 +6,7 @@ on:
       - main
     tags:
       - 'v*'
+    # Note: paths filter only applies to branch pushes, not tag pushes
     paths:
       - 'jobs/**'
       - 'packages/**'
@@ -47,10 +48,14 @@ jobs:
   build-tile:
     name: Build Tile
     runs-on: ubuntu-latest
+    # Always run for tags (paths filter doesn't work with tags)
+    if: github.event_name != 'push' || !contains(github.ref, 'refs/heads/') || github.ref == 'refs/heads/main'
 
     outputs:
       tile_version: ${{ steps.version.outputs.version }}
       tile_name: ${{ steps.package.outputs.tile_name }}
+      bpm_version: ${{ steps.versions.outputs.bpm_version }}
+      postgres_version: ${{ steps.versions.outputs.postgres_version }}
 
     steps:
       - name: Checkout repository
@@ -67,6 +72,12 @@ jobs:
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Building tile version: ${VERSION}"
+
+      - name: Export dependency versions
+        id: versions
+        run: |
+          echo "bpm_version=${{ env.BPM_VERSION }}" >> $GITHUB_OUTPUT
+          echo "postgres_version=${{ env.POSTGRES_VERSION }}" >> $GITHUB_OUTPUT
 
       - name: Install BOSH CLI
         run: |
@@ -166,22 +177,23 @@ jobs:
 
           OUTPOST_BASE="https://github.com/goauthentik/authentik/releases/download/version%2F${AUTHENTIK_VERSION}"
 
-          echo "Downloading LDAP outpost..."
-          curl -L -o blobs/outposts/ldap/authentik-ldap_linux_amd64 \
-            "${OUTPOST_BASE}/authentik-ldap_linux_amd64" || echo "LDAP outpost not available"
+          # Download outposts with proper error handling
+          # Use -f to fail on HTTP errors (404, etc.) and don't create empty files
+          for outpost in ldap radius proxy; do
+            echo "Downloading ${outpost} outpost..."
+            if curl -fSL -o "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" \
+                 "${OUTPOST_BASE}/authentik-${outpost}_linux_amd64" 2>/dev/null; then
+              echo "  ✓ ${outpost} outpost downloaded"
+              chmod +x "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64"
+            else
+              echo "  ⚠ ${outpost} outpost not available for this version (optional)"
+              rm -f "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64"
+            fi
+          done
 
-          echo "Downloading RADIUS outpost..."
-          curl -L -o blobs/outposts/radius/authentik-radius_linux_amd64 \
-            "${OUTPOST_BASE}/authentik-radius_linux_amd64" || echo "RADIUS outpost not available"
-
-          echo "Downloading Proxy outpost..."
-          curl -L -o blobs/outposts/proxy/authentik-proxy_linux_amd64 \
-            "${OUTPOST_BASE}/authentik-proxy_linux_amd64" || echo "Proxy outpost not available"
-
-          # Make binaries executable
-          chmod +x blobs/outposts/*/authentik-*_linux_amd64 2>/dev/null || true
-
-          ls -la blobs/outposts/*/
+          echo ""
+          echo "Outpost binaries downloaded:"
+          find blobs/outposts -type f -name "authentik-*" -exec ls -la {} \; || echo "No outpost binaries found"
 
       - name: Add blobs to BOSH release
         env:
@@ -358,13 +370,12 @@ jobs:
             exit 1
           fi
 
-          # Validate metadata YAML
-          if command -v python3 &> /dev/null; then
-            python3 -c "import yaml; yaml.safe_load(open('tile-contents/metadata/metadata.yml'))" || {
-              echo "ERROR: Invalid YAML in metadata.yml"
-              exit 1
-            }
-          fi
+          # Validate metadata YAML syntax
+          pip install pyyaml --quiet
+          python3 -c "import yaml; yaml.safe_load(open('tile-contents/metadata/metadata.yml'))" || {
+            echo "ERROR: Invalid YAML in metadata.yml"
+            exit 1
+          }
 
           echo ""
           echo "=== Tile Validation Passed ==="
@@ -388,8 +399,8 @@ jobs:
           echo "### Included Releases" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- authentik-${{ needs.build-tile.outputs.tile_version }}.tgz" >> $GITHUB_STEP_SUMMARY
-          echo "- bpm-${{ env.BPM_VERSION }}.tgz" >> $GITHUB_STEP_SUMMARY
-          echo "- postgres-${{ env.POSTGRES_VERSION }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "- bpm-${{ needs.build-tile.outputs.bpm_version }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "- postgres-${{ needs.build-tile.outputs.postgres_version }}.tgz" >> $GITHUB_STEP_SUMMARY
 
   release:
     name: Create Release
@@ -414,9 +425,14 @@ jobs:
           name: authentik-release-${{ needs.build-tile.outputs.tile_version }}
 
       - name: Generate checksums
+        id: checksums
         run: |
           sha256sum *.pivotal *.tgz > checksums.txt
           cat checksums.txt
+          # Store checksums for use in release body
+          echo "checksums<<EOF" >> $GITHUB_OUTPUT
+          cat checksums.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -455,11 +471,11 @@ jobs:
             ```
 
             ### Included Components
-            - Authentik ${{ env.AUTHENTIK_VERSION }}
-            - BPM Release ${{ env.BPM_VERSION }}
-            - PostgreSQL Release ${{ env.POSTGRES_VERSION }}
+            - Authentik 2025.12.1
+            - BPM Release 1.2.20
+            - PostgreSQL Release 53
 
             ### Checksums
             ```
-            $(cat checksums.txt)
+            ${{ steps.checksums.outputs.checksums }}
             ```
