@@ -166,6 +166,12 @@ jobs:
           echo "Downloading Python dependencies..."
           pip download -d ${GITHUB_WORKSPACE}/blobs/authentik/vendor -r requirements.txt || true
 
+          # Ensure vendor directory has at least one file (required by package spec glob)
+          if [ -z "$(ls -A ${GITHUB_WORKSPACE}/blobs/authentik/vendor 2>/dev/null)" ]; then
+            echo "⚠ No vendor wheels downloaded, creating placeholder"
+            echo "# Vendor dependencies placeholder" > ${GITHUB_WORKSPACE}/blobs/authentik/vendor/README.txt
+          fi
+
           # Build frontend
           echo "Building frontend..."
           cd web
@@ -239,16 +245,16 @@ jobs:
             echo "⚠ web-dist.tar.gz not found (frontend build may have failed)"
           fi
 
-          # Vendor wheels
-          echo "=== Adding vendor wheels ==="
-          wheel_count=0
-          for wheel in blobs/authentik/vendor/*.whl; do
-            if [ -f "$wheel" ]; then
-              bosh add-blob "$wheel" "authentik/vendor/$(basename $wheel)"
-              wheel_count=$((wheel_count + 1))
+          # Vendor files (wheels and any other files)
+          echo "=== Adding vendor files ==="
+          vendor_count=0
+          for vendor_file in blobs/authentik/vendor/*; do
+            if [ -f "$vendor_file" ]; then
+              bosh add-blob "$vendor_file" "authentik/vendor/$(basename $vendor_file)"
+              vendor_count=$((vendor_count + 1))
             fi
           done
-          echo "Added ${wheel_count} wheel files"
+          echo "Added ${vendor_count} vendor files"
 
           # Outpost binaries
           echo "=== Adding outpost binaries ==="
