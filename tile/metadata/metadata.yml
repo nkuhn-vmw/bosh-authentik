@@ -1,0 +1,1031 @@
+---
+name: authentik
+product_version: "2025.12.1"
+minimum_version_for_upgrade: "2025.1.0"
+metadata_version: "2.0"
+label: Authentik Identity Provider
+description: |
+  Authentik is an open-source Identity Provider focused on flexibility and versatility.
+  It provides authentication, authorization, and user management capabilities including
+  SAML, OAuth2/OIDC, LDAP, RADIUS, and forward auth proxy support.
+icon_image: ((icon_image))
+
+stemcell_criteria:
+  os: ubuntu-jammy
+  version: "1.406"
+  requires_cpi: false
+
+releases:
+  - name: authentik
+    version: "2025.12.1"
+    file: authentik-2025.12.1.tgz
+  - name: bpm
+    version: "1.2.20"
+    file: bpm-1.2.20.tgz
+  - name: postgres
+    version: "53"
+    file: postgres-53.tgz
+
+post_deploy_errands:
+  - name: smoke-tests
+    label: Smoke Tests
+    description: Run basic health checks on Authentik deployment
+
+pre_delete_errands: []
+
+form_types:
+  #############################################
+  # Authentik Core Configuration
+  #############################################
+  - name: authentik_core_config
+    label: Authentik Configuration
+    description: Core configuration settings for Authentik
+    property_inputs:
+      - reference: .properties.authentik_secret_key
+        label: Secret Key
+        description: 64-character secret key for signing cookies and tokens (auto-generated if empty)
+      - reference: .properties.log_level
+        label: Log Level
+        description: Application logging verbosity
+      - reference: .properties.cookie_domain
+        label: Cookie Domain
+        description: Domain for session cookies (leave empty for default)
+      - reference: .properties.disable_update_check
+        label: Disable Update Check
+        description: Disable checking for new authentik versions
+      - reference: .properties.impersonation
+        label: Allow Impersonation
+        description: Allow administrators to impersonate users
+
+  #############################################
+  # Database Configuration
+  #############################################
+  - name: database_config
+    label: Database Configuration
+    description: PostgreSQL database settings
+    property_inputs:
+      - reference: .properties.database_type
+        label: Database Type
+        description: Choose between internal or external PostgreSQL database
+      - reference: .properties.external_postgres_host
+        label: External PostgreSQL Host
+        description: Hostname of external PostgreSQL server
+      - reference: .properties.external_postgres_port
+        label: External PostgreSQL Port
+        description: Port number for external PostgreSQL
+      - reference: .properties.external_postgres_username
+        label: External PostgreSQL Username
+        description: Username for external PostgreSQL
+      - reference: .properties.external_postgres_password
+        label: External PostgreSQL Password
+        description: Password for external PostgreSQL
+      - reference: .properties.external_postgres_database
+        label: External PostgreSQL Database
+        description: Database name for authentik
+      - reference: .properties.external_postgres_sslmode
+        label: External PostgreSQL SSL Mode
+        description: SSL mode for PostgreSQL connection
+
+  #############################################
+  # Email/SMTP Configuration
+  #############################################
+  - name: email_config
+    label: Email (SMTP) Configuration
+    description: SMTP settings for sending emails
+    property_inputs:
+      - reference: .properties.smtp_host
+        label: SMTP Host
+        description: SMTP server hostname
+      - reference: .properties.smtp_port
+        label: SMTP Port
+        description: SMTP server port
+      - reference: .properties.smtp_username
+        label: SMTP Username
+        description: SMTP authentication username (optional)
+      - reference: .properties.smtp_password
+        label: SMTP Password
+        description: SMTP authentication password (optional)
+      - reference: .properties.smtp_from
+        label: From Address
+        description: Email address to send from
+      - reference: .properties.smtp_use_tls
+        label: Use TLS
+        description: Use TLS for SMTP connection
+      - reference: .properties.smtp_use_ssl
+        label: Use SSL
+        description: Use SSL for SMTP connection
+      - reference: .properties.smtp_timeout
+        label: Timeout
+        description: SMTP connection timeout in seconds
+
+  #############################################
+  # Storage Configuration
+  #############################################
+  - name: storage_config
+    label: Storage Configuration
+    description: Media storage settings
+    property_inputs:
+      - reference: .properties.storage_backend
+        label: Storage Backend
+        description: Choose between local filesystem or S3-compatible storage
+      - reference: .properties.s3_region
+        label: S3 Region
+        description: AWS S3 region
+      - reference: .properties.s3_endpoint
+        label: S3 Endpoint
+        description: Custom S3-compatible endpoint URL (optional)
+      - reference: .properties.s3_bucket_name
+        label: S3 Bucket Name
+        description: S3 bucket for media storage
+      - reference: .properties.s3_access_key
+        label: S3 Access Key
+        description: S3 access key ID
+      - reference: .properties.s3_secret_key
+        label: S3 Secret Key
+        description: S3 secret access key
+      - reference: .properties.s3_use_ssl
+        label: S3 Use SSL
+        description: Use SSL for S3 connections
+
+  #############################################
+  # Web Server Configuration
+  #############################################
+  - name: web_config
+    label: Web Server Configuration
+    description: Authentik web server settings
+    property_inputs:
+      - reference: .properties.web_workers
+        label: Web Workers
+        description: Number of Gunicorn worker processes
+      - reference: .properties.web_threads
+        label: Web Threads
+        description: Number of threads per worker
+      - reference: .properties.http_port
+        label: HTTP Port
+        description: HTTP port for authentik server
+      - reference: .properties.https_port
+        label: HTTPS Port
+        description: HTTPS port for authentik server
+      - reference: .properties.metrics_port
+        label: Metrics Port
+        description: Prometheus metrics port
+
+  #############################################
+  # Worker Configuration
+  #############################################
+  - name: worker_config
+    label: Worker Configuration
+    description: Background worker settings
+    property_inputs:
+      - reference: .properties.worker_concurrency
+        label: Worker Concurrency
+        description: Number of concurrent worker tasks
+
+  #############################################
+  # Cache Configuration
+  #############################################
+  - name: cache_config
+    label: Cache Configuration
+    description: Caching settings
+    property_inputs:
+      - reference: .properties.cache_timeout
+        label: Cache Timeout
+        description: Default cache timeout in seconds
+      - reference: .properties.cache_timeout_flows
+        label: Flow Cache Timeout
+        description: Flow plan cache timeout in seconds
+      - reference: .properties.cache_timeout_policies
+        label: Policy Cache Timeout
+        description: Policy cache timeout in seconds
+
+  #############################################
+  # Outpost Configuration
+  #############################################
+  - name: outpost_config
+    label: Outpost Configuration
+    description: Configure optional outposts for LDAP, RADIUS, and Proxy protocols
+    property_inputs:
+      - reference: .properties.enable_ldap_outpost
+        label: Enable LDAP Outpost
+        description: Deploy LDAP directory services outpost
+      - reference: .properties.enable_radius_outpost
+        label: Enable RADIUS Outpost
+        description: Deploy RADIUS authentication outpost
+      - reference: .properties.enable_proxy_outpost
+        label: Enable Proxy Outpost
+        description: Deploy forward auth proxy outpost
+      - reference: .properties.outpost_token
+        label: Outpost Token
+        description: API token for outpost authentication (obtain from authentik UI after initial setup)
+      - reference: .properties.outpost_insecure
+        label: Skip TLS Verification
+        description: Skip TLS verification when outposts connect to authentik
+
+property_blueprints:
+  #############################################
+  # Authentik Core Properties
+  #############################################
+  - name: authentik_secret_key
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: log_level
+    type: dropdown_select
+    configurable: true
+    default: info
+    options:
+      - name: debug
+        label: Debug
+      - name: info
+        label: Info
+      - name: warning
+        label: Warning
+      - name: error
+        label: Error
+
+  - name: cookie_domain
+    type: string
+    configurable: true
+    optional: true
+
+  - name: disable_update_check
+    type: boolean
+    configurable: true
+    default: true
+
+  - name: impersonation
+    type: boolean
+    configurable: true
+    default: true
+
+  #############################################
+  # Database Properties
+  #############################################
+  - name: database_type
+    type: selector
+    configurable: true
+    default: internal
+    option_templates:
+      - name: internal
+        select_value: internal
+        named_manifests: []
+        property_blueprints: []
+      - name: external
+        select_value: external
+        named_manifests: []
+        property_blueprints: []
+
+  - name: external_postgres_host
+    type: string
+    configurable: true
+    optional: true
+
+  - name: external_postgres_port
+    type: port
+    configurable: true
+    default: 5432
+
+  - name: external_postgres_username
+    type: string
+    configurable: true
+    default: authentik
+    optional: true
+
+  - name: external_postgres_password
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: external_postgres_database
+    type: string
+    configurable: true
+    default: authentik
+    optional: true
+
+  - name: external_postgres_sslmode
+    type: dropdown_select
+    configurable: true
+    default: prefer
+    options:
+      - name: disable
+        label: Disable
+      - name: allow
+        label: Allow
+      - name: prefer
+        label: Prefer
+      - name: require
+        label: Require
+      - name: verify-ca
+        label: Verify CA
+      - name: verify-full
+        label: Verify Full
+
+  #############################################
+  # Email/SMTP Properties
+  #############################################
+  - name: smtp_host
+    type: string
+    configurable: true
+    default: localhost
+
+  - name: smtp_port
+    type: port
+    configurable: true
+    default: 25
+
+  - name: smtp_username
+    type: string
+    configurable: true
+    optional: true
+
+  - name: smtp_password
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: smtp_from
+    type: email
+    configurable: true
+    default: authentik@localhost
+
+  - name: smtp_use_tls
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: smtp_use_ssl
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: smtp_timeout
+    type: integer
+    configurable: true
+    default: 10
+
+  #############################################
+  # Storage Properties
+  #############################################
+  - name: storage_backend
+    type: selector
+    configurable: true
+    default: file
+    option_templates:
+      - name: file
+        select_value: file
+        named_manifests: []
+        property_blueprints: []
+      - name: s3
+        select_value: s3
+        named_manifests: []
+        property_blueprints: []
+
+  - name: s3_region
+    type: string
+    configurable: true
+    default: us-east-1
+    optional: true
+
+  - name: s3_endpoint
+    type: string
+    configurable: true
+    optional: true
+
+  - name: s3_bucket_name
+    type: string
+    configurable: true
+    optional: true
+
+  - name: s3_access_key
+    type: string
+    configurable: true
+    optional: true
+
+  - name: s3_secret_key
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: s3_use_ssl
+    type: boolean
+    configurable: true
+    default: true
+
+  #############################################
+  # Web Server Properties
+  #############################################
+  - name: web_workers
+    type: integer
+    configurable: true
+    default: 2
+    constraints:
+      min: 1
+      max: 16
+
+  - name: web_threads
+    type: integer
+    configurable: true
+    default: 4
+    constraints:
+      min: 1
+      max: 32
+
+  - name: http_port
+    type: port
+    configurable: true
+    default: 9000
+
+  - name: https_port
+    type: port
+    configurable: true
+    default: 9443
+
+  - name: metrics_port
+    type: port
+    configurable: true
+    default: 9300
+
+  #############################################
+  # Worker Properties
+  #############################################
+  - name: worker_concurrency
+    type: integer
+    configurable: true
+    default: 2
+    constraints:
+      min: 1
+      max: 16
+
+  #############################################
+  # Cache Properties
+  #############################################
+  - name: cache_timeout
+    type: integer
+    configurable: true
+    default: 300
+    constraints:
+      min: 60
+      max: 86400
+
+  - name: cache_timeout_flows
+    type: integer
+    configurable: true
+    default: 300
+    constraints:
+      min: 60
+      max: 86400
+
+  - name: cache_timeout_policies
+    type: integer
+    configurable: true
+    default: 300
+    constraints:
+      min: 60
+      max: 86400
+
+  #############################################
+  # Outpost Properties
+  #############################################
+  - name: enable_ldap_outpost
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: enable_radius_outpost
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: enable_proxy_outpost
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: outpost_token
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: outpost_insecure
+    type: boolean
+    configurable: true
+    default: false
+
+  #############################################
+  # Generated Credentials
+  #############################################
+  - name: generated_postgres_password
+    type: secret
+
+  - name: generated_authentik_secret_key
+    type: secret
+    constraints:
+      length: 64
+
+job_types:
+  #############################################
+  # PostgreSQL Database (Internal)
+  #############################################
+  - name: postgres
+    resource_label: PostgreSQL Database
+    description: Internal PostgreSQL database for Authentik
+    templates:
+      - name: postgres
+        release: postgres
+        provides:
+          postgres:
+            as: database
+            shared: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 2048
+        constraints:
+          min: 1024
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 8192
+        constraints:
+          min: 4096
+      - name: persistent_disk
+        type: integer
+        configurable: true
+        default: 20480
+        constraints:
+          min: 10240
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 2
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: false
+      default: 1
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    single_az_only: true
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      databases:
+        port: 5432
+        databases:
+          - name: authentik
+        roles:
+          - name: authentik
+            password: (( .properties.generated_postgres_password.value ))
+
+  #############################################
+  # Authentik Server
+  #############################################
+  - name: authentik-server
+    resource_label: Authentik Server
+    description: Main Authentik web server
+    errand: false
+    templates:
+      - name: bpm
+        release: bpm
+      - name: authentik-server
+        release: authentik
+        consumes:
+          database:
+            from: database
+            optional: true
+        provides:
+          authentik:
+            as: authentik
+            shared: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 4096
+        constraints:
+          min: 2048
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 16384
+        constraints:
+          min: 8192
+      - name: persistent_disk
+        type: integer
+        configurable: true
+        default: 20480
+        constraints:
+          min: 10240
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 2
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: true
+      default: 1
+      constraints:
+        min: 1
+        max: 10
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      authentik:
+        secret_key: (( $ops_manager.ca_certificate.cert_pem || .properties.authentik_secret_key.value || .properties.generated_authentik_secret_key.value ))
+      port: (( .properties.http_port.value ))
+      https_port: (( .properties.https_port.value ))
+      metrics_port: (( .properties.metrics_port.value ))
+      postgresql:
+        host: (( .properties.database_type.selected_option.parsed_manifest(external_postgres_host) || "" ))
+        port: (( .properties.database_type.value == "external" ? .properties.external_postgres_port.value : 5432 ))
+        user: (( .properties.database_type.value == "external" ? .properties.external_postgres_username.value : "authentik" ))
+        password: (( .properties.database_type.value == "external" ? .properties.external_postgres_password.value : .properties.generated_postgres_password.value ))
+        database: (( .properties.database_type.value == "external" ? .properties.external_postgres_database.value : "authentik" ))
+        sslmode: (( .properties.database_type.value == "external" ? .properties.external_postgres_sslmode.value : "prefer" ))
+      web:
+        workers: (( .properties.web_workers.value ))
+        threads: (( .properties.web_threads.value ))
+      email:
+        host: (( .properties.smtp_host.value ))
+        port: (( .properties.smtp_port.value ))
+        username: (( .properties.smtp_username.value ))
+        password: (( .properties.smtp_password.value ))
+        use_tls: (( .properties.smtp_use_tls.value ))
+        use_ssl: (( .properties.smtp_use_ssl.value ))
+        from: (( .properties.smtp_from.value ))
+        timeout: (( .properties.smtp_timeout.value ))
+      log_level: (( .properties.log_level.value ))
+      cookie_domain: (( .properties.cookie_domain.value ))
+      disable_update_check: (( .properties.disable_update_check.value ))
+      impersonation: (( .properties.impersonation.value ))
+      cache:
+        timeout: (( .properties.cache_timeout.value ))
+        timeout_flows: (( .properties.cache_timeout_flows.value ))
+        timeout_policies: (( .properties.cache_timeout_policies.value ))
+      storage:
+        media:
+          backend: (( .properties.storage_backend.value ))
+        s3:
+          region: (( .properties.s3_region.value ))
+          endpoint: (( .properties.s3_endpoint.value ))
+          access_key: (( .properties.s3_access_key.value ))
+          secret_key: (( .properties.s3_secret_key.value ))
+          bucket_name: (( .properties.s3_bucket_name.value ))
+          use_ssl: (( .properties.s3_use_ssl.value ))
+
+  #############################################
+  # Authentik Worker
+  #############################################
+  - name: authentik-worker
+    resource_label: Authentik Worker
+    description: Background task processor for Authentik
+    errand: false
+    templates:
+      - name: bpm
+        release: bpm
+      - name: authentik-worker
+        release: authentik
+        consumes:
+          database:
+            from: database
+            optional: true
+          authentik:
+            from: authentik
+            optional: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 2048
+        constraints:
+          min: 1024
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 8192
+        constraints:
+          min: 4096
+      - name: persistent_disk
+        type: integer
+        configurable: true
+        default: 10240
+        constraints:
+          min: 5120
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 2
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: true
+      default: 1
+      constraints:
+        min: 1
+        max: 10
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      authentik:
+        secret_key: (( .properties.authentik_secret_key.value || .properties.generated_authentik_secret_key.value ))
+      postgresql:
+        host: (( .properties.database_type.value == "external" ? .properties.external_postgres_host.value : "" ))
+        port: (( .properties.database_type.value == "external" ? .properties.external_postgres_port.value : 5432 ))
+        user: (( .properties.database_type.value == "external" ? .properties.external_postgres_username.value : "authentik" ))
+        password: (( .properties.database_type.value == "external" ? .properties.external_postgres_password.value : .properties.generated_postgres_password.value ))
+        database: (( .properties.database_type.value == "external" ? .properties.external_postgres_database.value : "authentik" ))
+        sslmode: (( .properties.database_type.value == "external" ? .properties.external_postgres_sslmode.value : "prefer" ))
+      worker:
+        concurrency: (( .properties.worker_concurrency.value ))
+      email:
+        host: (( .properties.smtp_host.value ))
+        port: (( .properties.smtp_port.value ))
+        username: (( .properties.smtp_username.value ))
+        password: (( .properties.smtp_password.value ))
+        use_tls: (( .properties.smtp_use_tls.value ))
+        use_ssl: (( .properties.smtp_use_ssl.value ))
+        from: (( .properties.smtp_from.value ))
+        timeout: (( .properties.smtp_timeout.value ))
+      log_level: (( .properties.log_level.value ))
+      cache:
+        timeout: (( .properties.cache_timeout.value ))
+        timeout_flows: (( .properties.cache_timeout_flows.value ))
+        timeout_policies: (( .properties.cache_timeout_policies.value ))
+      storage:
+        media:
+          backend: (( .properties.storage_backend.value ))
+        s3:
+          region: (( .properties.s3_region.value ))
+          endpoint: (( .properties.s3_endpoint.value ))
+          access_key: (( .properties.s3_access_key.value ))
+          secret_key: (( .properties.s3_secret_key.value ))
+          bucket_name: (( .properties.s3_bucket_name.value ))
+          use_ssl: (( .properties.s3_use_ssl.value ))
+
+  #############################################
+  # LDAP Outpost (Optional)
+  #############################################
+  - name: authentik-ldap-outpost
+    resource_label: LDAP Outpost
+    description: LDAP directory services outpost for Authentik
+    errand: false
+    templates:
+      - name: bpm
+        release: bpm
+      - name: authentik-ldap-outpost
+        release: authentik
+        consumes:
+          authentik:
+            from: authentik
+            optional: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 1024
+        constraints:
+          min: 512
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 4096
+        constraints:
+          min: 2048
+      - name: persistent_disk
+        type: integer
+        configurable: false
+        default: 0
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 1
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: true
+      default: 0
+      constraints:
+        min: 0
+        max: 5
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      authentik:
+        host: ""
+        token: (( .properties.outpost_token.value ))
+        insecure: (( .properties.outpost_insecure.value ))
+      ldap_port: 3389
+      ldaps_port: 6636
+      metrics_port: 9300
+      log_level: (( .properties.log_level.value ))
+
+  #############################################
+  # RADIUS Outpost (Optional)
+  #############################################
+  - name: authentik-radius-outpost
+    resource_label: RADIUS Outpost
+    description: RADIUS authentication outpost for Authentik
+    errand: false
+    templates:
+      - name: bpm
+        release: bpm
+      - name: authentik-radius-outpost
+        release: authentik
+        consumes:
+          authentik:
+            from: authentik
+            optional: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 1024
+        constraints:
+          min: 512
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 4096
+        constraints:
+          min: 2048
+      - name: persistent_disk
+        type: integer
+        configurable: false
+        default: 0
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 1
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: true
+      default: 0
+      constraints:
+        min: 0
+        max: 5
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      authentik:
+        host: ""
+        token: (( .properties.outpost_token.value ))
+        insecure: (( .properties.outpost_insecure.value ))
+      radius_port: 1812
+      metrics_port: 9300
+      log_level: (( .properties.log_level.value ))
+
+  #############################################
+  # Proxy Outpost (Optional)
+  #############################################
+  - name: authentik-proxy-outpost
+    resource_label: Proxy Outpost
+    description: Forward auth proxy outpost for Authentik
+    errand: false
+    templates:
+      - name: bpm
+        release: bpm
+      - name: authentik-proxy-outpost
+        release: authentik
+        consumes:
+          authentik:
+            from: authentik
+            optional: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 1024
+        constraints:
+          min: 512
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 4096
+        constraints:
+          min: 2048
+      - name: persistent_disk
+        type: integer
+        configurable: false
+        default: 0
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 1
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: true
+      default: 0
+      constraints:
+        min: 0
+        max: 5
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      authentik:
+        host: ""
+        token: (( .properties.outpost_token.value ))
+        insecure: (( .properties.outpost_insecure.value ))
+      http_port: 9080
+      https_port: 9444
+      metrics_port: 9300
+      log_level: (( .properties.log_level.value ))
+
+  #############################################
+  # Smoke Tests Errand
+  #############################################
+  - name: smoke-tests
+    resource_label: Smoke Tests
+    description: Runs health checks on Authentik deployment
+    errand: true
+    templates:
+      - name: smoke-tests
+        release: authentik
+        consumes:
+          authentik:
+            from: authentik
+            optional: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: false
+        default: 1024
+      - name: ephemeral_disk
+        type: integer
+        configurable: false
+        default: 4096
+      - name: persistent_disk
+        type: integer
+        configurable: false
+        default: 0
+      - name: cpu
+        type: integer
+        configurable: false
+        default: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: false
+      default: 1
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      authentik:
+        host: ""
+        port: (( .properties.http_port.value ))

@@ -1,0 +1,11 @@
+---
+# Content Migrations for Authentik Tile
+#
+# These migrations handle data transformations during tile upgrades.
+# Each migration runs once during the upgrade process.
+
+product: authentik
+installation_schema_version: "1.0"
+
+to_version: "2025.12.1"
+migrations: []
