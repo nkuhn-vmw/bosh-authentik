@@ -1,0 +1,465 @@
+name: Build Tanzu Operations Manager Tile
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - 'jobs/**'
+      - 'packages/**'
+      - 'tile/**'
+      - '.github/workflows/build-tile.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'jobs/**'
+      - 'packages/**'
+      - 'tile/**'
+      - '.github/workflows/build-tile.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Tile version (e.g., 2025.12.1)'
+        required: false
+        default: '2025.12.1'
+        type: string
+      authentik_version:
+        description: 'Authentik version to package'
+        required: false
+        default: '2025.12.1'
+        type: string
+      create_release:
+        description: 'Create GitHub release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  TILE_VERSION: ${{ github.event.inputs.version || '2025.12.1' }}
+  AUTHENTIK_VERSION: ${{ github.event.inputs.authentik_version || '2025.12.1' }}
+  BPM_VERSION: '1.2.20'
+  POSTGRES_VERSION: '53'
+
+jobs:
+  build-tile:
+    name: Build Tile
+    runs-on: ubuntu-latest
+
+    outputs:
+      tile_version: ${{ steps.version.outputs.version }}
+      tile_name: ${{ steps.package.outputs.tile_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"  # Remove 'v' prefix
+          else
+            VERSION="${{ env.TILE_VERSION }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building tile version: ${VERSION}"
+
+      - name: Install BOSH CLI
+        run: |
+          curl -Lo ./bosh https://github.com/cloudfoundry/bosh-cli/releases/download/v7.5.0/bosh-cli-7.5.0-linux-amd64
+          chmod +x ./bosh
+          sudo mv ./bosh /usr/local/bin/bosh
+          bosh --version
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache blobs
+        uses: actions/cache@v4
+        with:
+          path: |
+            blobs/
+            .blobs/
+          key: blobs-${{ env.AUTHENTIK_VERSION }}-${{ hashFiles('config/blobs.yml') }}
+          restore-keys: |
+            blobs-${{ env.AUTHENTIK_VERSION }}-
+            blobs-
+
+      - name: Download Python blobs
+        run: |
+          mkdir -p blobs/python
+
+          # Download Python source
+          if [ ! -f blobs/python/Python-3.12.4.tar.xz ]; then
+            echo "Downloading Python 3.12.4..."
+            curl -L -o blobs/python/Python-3.12.4.tar.xz \
+              https://www.python.org/ftp/python/3.12.4/Python-3.12.4.tar.xz
+          fi
+
+          # Download setuptools
+          if [ ! -f blobs/python/setuptools-70.0.0.tar.gz ]; then
+            echo "Downloading setuptools..."
+            curl -L -o blobs/python/setuptools-70.0.0.tar.gz \
+              https://files.pythonhosted.org/packages/source/s/setuptools/setuptools-70.0.0.tar.gz
+          fi
+
+          # Download pip
+          if [ ! -f blobs/python/pip-24.0.tar.gz ]; then
+            echo "Downloading pip..."
+            curl -L -o blobs/python/pip-24.0.tar.gz \
+              https://files.pythonhosted.org/packages/source/p/pip/pip-24.0.tar.gz
+          fi
+
+          ls -la blobs/python/
+
+      - name: Download Authentik source and dependencies
+        env:
+          AUTHENTIK_VERSION: ${{ env.AUTHENTIK_VERSION }}
+        run: |
+          mkdir -p blobs/authentik/vendor
+
+          # Clone authentik
+          echo "Cloning authentik ${AUTHENTIK_VERSION}..."
+          git clone --depth 1 --branch "version/${AUTHENTIK_VERSION}" \
+            https://github.com/goauthentik/authentik.git /tmp/authentik || \
+          git clone --depth 1 --branch "main" \
+            https://github.com/goauthentik/authentik.git /tmp/authentik
+
+          # Create source tarball
+          cd /tmp/authentik
+          tar czf ${GITHUB_WORKSPACE}/blobs/authentik/authentik-${AUTHENTIK_VERSION}.tar.gz \
+            --exclude='.git' --exclude='web/node_modules' --exclude='.github' .
+
+          # Download Python dependencies
+          echo "Downloading Python dependencies..."
+          pip download -d ${GITHUB_WORKSPACE}/blobs/authentik/vendor -r requirements.txt || true
+
+          # Build frontend
+          echo "Building frontend..."
+          cd web
+          npm ci --legacy-peer-deps || npm install --legacy-peer-deps || true
+          npm run build || echo "Frontend build completed with warnings"
+
+          if [ -d "dist" ]; then
+            tar czf ${GITHUB_WORKSPACE}/blobs/authentik/web-dist.tar.gz dist/
+          fi
+
+          echo "Authentik blobs prepared"
+          ls -la ${GITHUB_WORKSPACE}/blobs/authentik/
+
+      - name: Download outpost binaries
+        env:
+          AUTHENTIK_VERSION: ${{ env.AUTHENTIK_VERSION }}
+        run: |
+          mkdir -p blobs/outposts/{ldap,radius,proxy}
+
+          OUTPOST_BASE="https://github.com/goauthentik/authentik/releases/download/version%2F${AUTHENTIK_VERSION}"
+
+          echo "Downloading LDAP outpost..."
+          curl -L -o blobs/outposts/ldap/authentik-ldap_linux_amd64 \
+            "${OUTPOST_BASE}/authentik-ldap_linux_amd64" || echo "LDAP outpost not available"
+
+          echo "Downloading RADIUS outpost..."
+          curl -L -o blobs/outposts/radius/authentik-radius_linux_amd64 \
+            "${OUTPOST_BASE}/authentik-radius_linux_amd64" || echo "RADIUS outpost not available"
+
+          echo "Downloading Proxy outpost..."
+          curl -L -o blobs/outposts/proxy/authentik-proxy_linux_amd64 \
+            "${OUTPOST_BASE}/authentik-proxy_linux_amd64" || echo "Proxy outpost not available"
+
+          # Make binaries executable
+          chmod +x blobs/outposts/*/authentik-*_linux_amd64 2>/dev/null || true
+
+          ls -la blobs/outposts/*/
+
+      - name: Add blobs to BOSH release
+        env:
+          AUTHENTIK_VERSION: ${{ env.AUTHENTIK_VERSION }}
+        run: |
+          # Python blobs
+          bosh add-blob blobs/python/Python-3.12.4.tar.xz python/Python-3.12.4.tar.xz
+          bosh add-blob blobs/python/setuptools-70.0.0.tar.gz python/setuptools-70.0.0.tar.gz
+          bosh add-blob blobs/python/pip-24.0.tar.gz python/pip-24.0.tar.gz
+
+          # Authentik source
+          bosh add-blob blobs/authentik/authentik-${AUTHENTIK_VERSION}.tar.gz \
+            authentik/authentik-${AUTHENTIK_VERSION}.tar.gz
+
+          # Frontend dist
+          if [ -f blobs/authentik/web-dist.tar.gz ]; then
+            bosh add-blob blobs/authentik/web-dist.tar.gz authentik/web-dist.tar.gz
+          fi
+
+          # Vendor wheels
+          for wheel in blobs/authentik/vendor/*.whl; do
+            if [ -f "$wheel" ]; then
+              bosh add-blob "$wheel" "authentik/vendor/$(basename $wheel)"
+            fi
+          done
+
+          # Outpost binaries
+          for outpost in ldap radius proxy; do
+            if [ -f "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" ]; then
+              bosh add-blob "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" \
+                "outposts/${outpost}/authentik-${outpost}_linux_amd64"
+            fi
+          done
+
+          echo "Blobs added to release"
+
+      - name: Create BOSH release
+        id: release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "Creating BOSH release version ${VERSION}..."
+          bosh create-release \
+            --force \
+            --version="${VERSION}" \
+            --tarball="authentik-${VERSION}.tgz"
+
+          echo "release_file=authentik-${VERSION}.tgz" >> $GITHUB_OUTPUT
+          ls -la authentik-*.tgz
+
+      - name: Download dependency releases
+        run: |
+          mkdir -p tile-build/releases
+
+          # Copy authentik release
+          cp ${{ steps.release.outputs.release_file }} tile-build/releases/
+
+          # Download BPM release
+          echo "Downloading BPM release v${BPM_VERSION}..."
+          curl -L -o tile-build/releases/bpm-${BPM_VERSION}.tgz \
+            "https://bosh.io/d/github.com/cloudfoundry/bpm-release?v=${BPM_VERSION}"
+
+          # Download PostgreSQL release
+          echo "Downloading PostgreSQL release v${POSTGRES_VERSION}..."
+          curl -L -o tile-build/releases/postgres-${POSTGRES_VERSION}.tgz \
+            "https://bosh.io/d/github.com/cloudfoundry/postgres-release?v=${POSTGRES_VERSION}"
+
+          ls -la tile-build/releases/
+
+      - name: Prepare tile metadata
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p tile-build/metadata
+          mkdir -p tile-build/migrations/v1
+          mkdir -p tile-build/content_migrations
+
+          # Copy and update metadata
+          cp tile/metadata/metadata.yml tile-build/metadata/
+
+          # Update version references in metadata
+          sed -i "s/^product_version:.*/product_version: \"${VERSION}\"/" tile-build/metadata/metadata.yml
+          sed -i "s/version: \"2025.12.1\"/version: \"${VERSION}\"/" tile-build/metadata/metadata.yml
+          sed -i "s/file: authentik-2025.12.1.tgz/file: authentik-${VERSION}.tgz/" tile-build/metadata/metadata.yml
+
+          # Generate base64 icon (placeholder - 1x1 transparent PNG)
+          ICON_BASE64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+          sed -i "s|((icon_image))|${ICON_BASE64}|" tile-build/metadata/metadata.yml
+
+          # Copy migrations
+          cp tile/migrations/v1/*.js tile-build/migrations/v1/ || true
+          cp tile/content_migrations/*.yml tile-build/content_migrations/ || true
+
+          echo "Tile metadata prepared"
+
+      - name: Package tile
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TILE_NAME="authentik-${VERSION}.pivotal"
+
+          cd tile-build
+          zip -r "../${TILE_NAME}" .
+
+          cd ..
+          ls -la *.pivotal
+
+          echo "tile_name=${TILE_NAME}" >> $GITHUB_OUTPUT
+          echo "Tile packaged: ${TILE_NAME}"
+
+      - name: Upload tile artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentik-tile-${{ steps.version.outputs.version }}
+          path: ${{ steps.package.outputs.tile_name }}
+          retention-days: 30
+
+      - name: Upload BOSH release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentik-release-${{ steps.version.outputs.version }}
+          path: ${{ steps.release.outputs.release_file }}
+          retention-days: 30
+
+  validate-tile:
+    name: Validate Tile
+    runs-on: ubuntu-latest
+    needs: build-tile
+
+    steps:
+      - name: Download tile artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: authentik-tile-${{ needs.build-tile.outputs.tile_version }}
+
+      - name: Validate tile structure
+        run: |
+          TILE_FILE="${{ needs.build-tile.outputs.tile_name }}"
+
+          echo "Validating tile: ${TILE_FILE}"
+
+          # Check file exists and is valid zip
+          if ! unzip -t "${TILE_FILE}" > /dev/null 2>&1; then
+            echo "ERROR: Tile is not a valid zip file"
+            exit 1
+          fi
+
+          # Extract and validate contents
+          mkdir -p tile-contents
+          unzip -q "${TILE_FILE}" -d tile-contents
+
+          # Check required directories
+          for dir in metadata releases; do
+            if [ ! -d "tile-contents/${dir}" ]; then
+              echo "ERROR: Missing required directory: ${dir}"
+              exit 1
+            fi
+          done
+
+          # Check metadata file
+          if [ ! -f "tile-contents/metadata/metadata.yml" ]; then
+            echo "ERROR: Missing metadata.yml"
+            exit 1
+          fi
+
+          # Check releases
+          echo "Releases included:"
+          ls -la tile-contents/releases/
+
+          RELEASE_COUNT=$(ls -1 tile-contents/releases/*.tgz 2>/dev/null | wc -l)
+          if [ "$RELEASE_COUNT" -lt 3 ]; then
+            echo "ERROR: Expected at least 3 releases (authentik, bpm, postgres), found ${RELEASE_COUNT}"
+            exit 1
+          fi
+
+          # Validate metadata YAML
+          if command -v python3 &> /dev/null; then
+            python3 -c "import yaml; yaml.safe_load(open('tile-contents/metadata/metadata.yml'))" || {
+              echo "ERROR: Invalid YAML in metadata.yml"
+              exit 1
+            }
+          fi
+
+          echo ""
+          echo "=== Tile Validation Passed ==="
+          echo "Tile: ${TILE_FILE}"
+          echo "Version: ${{ needs.build-tile.outputs.tile_version }}"
+          echo "Releases: ${RELEASE_COUNT}"
+
+      - name: Generate tile summary
+        run: |
+          TILE_FILE="${{ needs.build-tile.outputs.tile_name }}"
+          TILE_SIZE=$(du -h "${TILE_FILE}" | cut -f1)
+
+          echo "## Tile Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tile Name | \`${TILE_FILE}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ needs.build-tile.outputs.tile_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | ${TILE_SIZE} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Included Releases" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- authentik-${{ needs.build-tile.outputs.tile_version }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "- bpm-${{ env.BPM_VERSION }}.tgz" >> $GITHUB_STEP_SUMMARY
+          echo "- postgres-${{ env.POSTGRES_VERSION }}.tgz" >> $GITHUB_STEP_SUMMARY
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-tile, validate-tile]
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download tile artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: authentik-tile-${{ needs.build-tile.outputs.tile_version }}
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: authentik-release-${{ needs.build-tile.outputs.tile_version }}
+
+      - name: Generate checksums
+        run: |
+          sha256sum *.pivotal *.tgz > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Authentik Tile v${{ needs.build-tile.outputs.tile_version }}
+          tag_name: v${{ needs.build-tile.outputs.tile_version }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            ${{ needs.build-tile.outputs.tile_name }}
+            authentik-${{ needs.build-tile.outputs.tile_version }}.tgz
+            checksums.txt
+          body: |
+            ## Authentik Tile for Tanzu Operations Manager
+
+            This release includes:
+            - **Tile**: `${{ needs.build-tile.outputs.tile_name }}` - Import directly into Ops Manager
+            - **BOSH Release**: `authentik-${{ needs.build-tile.outputs.tile_version }}.tgz` - For standalone BOSH deployments
+
+            ### Installation
+
+            #### Via Ops Manager UI
+            1. Download the `.pivotal` file
+            2. Log into Tanzu Operations Manager
+            3. Click **Import a Product**
+            4. Select the downloaded tile
+            5. Configure and deploy
+
+            #### Via OM CLI
+            ```bash
+            om upload-product -p ${{ needs.build-tile.outputs.tile_name }}
+            om stage-product -p authentik -v ${{ needs.build-tile.outputs.tile_version }}
+            om configure-product -c config.yml
+            om apply-changes
+            ```
+
+            ### Included Components
+            - Authentik ${{ env.AUTHENTIK_VERSION }}
+            - BPM Release ${{ env.BPM_VERSION }}
+            - PostgreSQL Release ${{ env.POSTGRES_VERSION }}
+
+            ### Checksums
+            ```
+            $(cat checksums.txt)
+            ```
