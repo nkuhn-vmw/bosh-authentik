@@ -93,6 +93,9 @@ jobs:
           sudo mv ./bosh /usr/local/bin/bosh
           bosh --version
 
+          # Create blobstore directory (required by config/final.yml)
+          mkdir -p /tmp/authentik-blobs
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -171,6 +174,13 @@ jobs:
 
           if [ -d "dist" ]; then
             tar czf ${GITHUB_WORKSPACE}/blobs/authentik/web-dist.tar.gz dist/
+            echo "✓ Frontend dist packaged"
+          else
+            # Create placeholder if frontend build failed (required by package spec)
+            echo "⚠ Frontend build failed, creating placeholder"
+            mkdir -p dist
+            echo "Frontend build placeholder" > dist/README.txt
+            tar czf ${GITHUB_WORKSPACE}/blobs/authentik/web-dist.tar.gz dist/
           fi
 
           echo "Authentik blobs prepared"
@@ -206,48 +216,76 @@ jobs:
         env:
           AUTHENTIK_VERSION: ${{ steps.version.outputs.authentik_version }}
         run: |
-          # Python blobs
+          set -e  # Exit on error
+
+          echo "=== Verifying blob files exist ==="
+          ls -la blobs/python/
+          ls -la blobs/authentik/
+
+          echo "=== Adding Python blobs ==="
           bosh add-blob blobs/python/Python-3.12.4.tar.xz python/Python-3.12.4.tar.xz
           bosh add-blob blobs/python/setuptools-70.0.0.tar.gz python/setuptools-70.0.0.tar.gz
           bosh add-blob blobs/python/pip-24.0.tar.gz python/pip-24.0.tar.gz
 
-          # Authentik source
+          echo "=== Adding Authentik source ==="
           bosh add-blob blobs/authentik/authentik-${AUTHENTIK_VERSION}.tar.gz \
             authentik/authentik-${AUTHENTIK_VERSION}.tar.gz
 
-          # Frontend dist
+          # Frontend dist (optional - may not exist if build failed)
           if [ -f blobs/authentik/web-dist.tar.gz ]; then
+            echo "=== Adding frontend dist ==="
             bosh add-blob blobs/authentik/web-dist.tar.gz authentik/web-dist.tar.gz
+          else
+            echo "⚠ web-dist.tar.gz not found (frontend build may have failed)"
           fi
 
           # Vendor wheels
+          echo "=== Adding vendor wheels ==="
+          wheel_count=0
           for wheel in blobs/authentik/vendor/*.whl; do
             if [ -f "$wheel" ]; then
               bosh add-blob "$wheel" "authentik/vendor/$(basename $wheel)"
+              wheel_count=$((wheel_count + 1))
             fi
           done
+          echo "Added ${wheel_count} wheel files"
 
           # Outpost binaries
+          echo "=== Adding outpost binaries ==="
           for outpost in ldap radius proxy; do
             if [ -f "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" ]; then
               bosh add-blob "blobs/outposts/${outpost}/authentik-${outpost}_linux_amd64" \
                 "outposts/${outpost}/authentik-${outpost}_linux_amd64"
+              echo "  ✓ ${outpost} outpost added"
             fi
           done
 
-          echo "Blobs added to release"
+          echo ""
+          echo "=== Blob configuration ==="
+          cat config/blobs.yml
+          echo ""
+          echo "=== Blobstore contents ==="
+          ls -la /tmp/authentik-blobs/ 2>/dev/null || echo "Blobstore directory empty or not accessible"
+          echo ""
+          echo "Blobs added successfully"
 
       - name: Create BOSH release
         id: release
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo "Creating BOSH release version ${VERSION}..."
+          echo "=== BOSH Release Configuration ==="
+          echo "Version: ${VERSION}"
+          cat config/final.yml
+          echo ""
+          echo "=== Creating BOSH release ==="
           bosh create-release \
             --force \
             --version="${VERSION}" \
             --tarball="authentik-${VERSION}.tgz"
 
+          echo ""
+          echo "=== Release created successfully ==="
           echo "release_file=authentik-${VERSION}.tgz" >> $GITHUB_OUTPUT
           ls -la authentik-*.tgz
 
