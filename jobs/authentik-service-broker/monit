@@ -1,0 +1,5 @@
+check process authentik-service-broker
+  with pidfile /var/vcap/sys/run/bpm/authentik-service-broker/authentik-service-broker.pid
+  start program "/var/vcap/jobs/bpm/bin/bpm start authentik-service-broker"
+  stop program "/var/vcap/jobs/bpm/bin/bpm stop authentik-service-broker"
+  group vcap

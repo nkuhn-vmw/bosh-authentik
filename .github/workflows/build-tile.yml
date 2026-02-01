@@ -144,6 +144,19 @@ jobs:
 
           ls -la blobs/python/
 
+      - name: Download Ruby
+        run: |
+          mkdir -p blobs/ruby
+
+          # Download Ruby source for service broker
+          if [ ! -f blobs/ruby/ruby-3.2.2.tar.gz ]; then
+            echo "Downloading Ruby 3.2.2..."
+            curl -L -o blobs/ruby/ruby-3.2.2.tar.gz \
+              https://cache.ruby-lang.org/pub/ruby/3.2/ruby-3.2.2.tar.gz
+          fi
+
+          ls -la blobs/ruby/
+
       - name: Download Authentik source and dependencies
         env:
           AUTHENTIK_VERSION: ${{ steps.version.outputs.authentik_version }}
@@ -232,6 +245,14 @@ jobs:
           bosh add-blob blobs/python/Python-3.12.4.tar.xz python/Python-3.12.4.tar.xz
           bosh add-blob blobs/python/setuptools-70.0.0.tar.gz python/setuptools-70.0.0.tar.gz
           bosh add-blob blobs/python/pip-24.0.tar.gz python/pip-24.0.tar.gz
+
+          echo "=== Adding Ruby blobs ==="
+          if [ -f blobs/ruby/ruby-3.2.2.tar.gz ]; then
+            bosh add-blob blobs/ruby/ruby-3.2.2.tar.gz ruby/ruby-3.2.2.tar.gz
+            echo "✓ Ruby blob added"
+          else
+            echo "⚠ Ruby blob not found"
+          fi
 
           echo "=== Adding Authentik source ==="
           bosh add-blob blobs/authentik/authentik-${AUTHENTIK_VERSION}.tar.gz \

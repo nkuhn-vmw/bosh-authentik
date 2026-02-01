@@ -1,0 +1,152 @@
+---
+name: authentik-service-broker
+
+templates:
+  bpm.yml.erb: config/bpm.yml
+  broker.yml.erb: config/broker.yml
+  catalog.json.erb: config/catalog.json
+  pre-start.erb: bin/pre-start
+  broker.rb.erb: bin/broker.rb
+
+packages:
+  - ruby-3.2
+  - service-broker
+
+consumes:
+  - name: authentik
+    type: authentik
+    optional: true
+
+provides:
+  - name: service-broker
+    type: service-broker
+    properties:
+      - port
+      - username
+
+properties:
+  port:
+    description: "Service broker HTTP port"
+    default: 8080
+
+  username:
+    description: "Basic auth username for broker API"
+    default: "broker"
+
+  password:
+    description: "Basic auth password for broker API"
+
+  authentik.url:
+    description: "Authentik server URL (auto-detected if consuming authentik link)"
+    default: ""
+
+  authentik.api_token:
+    description: "Authentik API token for service broker operations"
+
+  authentik.verify_ssl:
+    description: "Verify SSL certificates when connecting to Authentik"
+    default: true
+
+  service.id:
+    description: "Service ID in the catalog"
+    default: "authentik-identity-provider"
+
+  service.name:
+    description: "Service name displayed in marketplace"
+    default: "authentik"
+
+  service.description:
+    description: "Service description"
+    default: "Authentik Identity Provider - SSO, OAuth2, SAML, LDAP"
+
+  service.tags:
+    description: "Service tags for marketplace search"
+    default:
+      - identity
+      - sso
+      - oauth2
+      - saml
+      - oidc
+      - ldap
+      - authentication
+
+  service.bindable:
+    description: "Whether service instances can be bound to applications"
+    default: true
+
+  service.plan_updateable:
+    description: "Whether service plans can be updated"
+    default: true
+
+  plans:
+    description: "Service plans configuration"
+    default:
+      - id: "authentik-starter"
+        name: "starter"
+        description: "Starter plan - Up to 100 users, 5 applications"
+        free: true
+        metadata:
+          displayName: "Starter"
+          bullets:
+            - "Up to 100 users"
+            - "Up to 5 OAuth2/OIDC applications"
+            - "Basic authentication flows"
+            - "Email support"
+          costs:
+            - amount:
+                usd: 0
+              unit: "MONTHLY"
+        max_users: 100
+        max_applications: 5
+      - id: "authentik-professional"
+        name: "professional"
+        description: "Professional plan - Up to 1000 users, 25 applications"
+        free: false
+        metadata:
+          displayName: "Professional"
+          bullets:
+            - "Up to 1000 users"
+            - "Up to 25 OAuth2/OIDC applications"
+            - "Advanced authentication flows"
+            - "LDAP/RADIUS outpost access"
+            - "Priority support"
+          costs:
+            - amount:
+                usd: 99
+              unit: "MONTHLY"
+        max_users: 1000
+        max_applications: 25
+      - id: "authentik-enterprise"
+        name: "enterprise"
+        description: "Enterprise plan - Unlimited users and applications"
+        free: false
+        metadata:
+          displayName: "Enterprise"
+          bullets:
+            - "Unlimited users"
+            - "Unlimited applications"
+            - "All authentication protocols"
+            - "Custom branding"
+            - "Dedicated support"
+          costs:
+            - amount:
+                usd: 499
+              unit: "MONTHLY"
+        max_users: -1
+        max_applications: -1
+
+  cf.api_url:
+    description: "Cloud Foundry API URL for service instance routing"
+    default: ""
+
+  cf.skip_ssl_validation:
+    description: "Skip SSL validation for CF API"
+    default: false
+
+  log_level:
+    description: "Log level (debug, info, warn, error)"
+    default: "info"
+
+  instance_data_path:
+    description: "Path to store service instance data"
+    default: "/var/vcap/store/authentik-service-broker/instances"

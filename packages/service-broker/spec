@@ -1,0 +1,8 @@
+---
+name: service-broker
+
+dependencies:
+  - ruby-3.2
+
+files:
+  - service-broker/**/*

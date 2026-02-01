@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e -x
+
+RUBY_VERSION="3.2.2"
+
+tar xzf ruby/ruby-${RUBY_VERSION}.tar.gz
+
+cd ruby-${RUBY_VERSION}
+
+# Configure Ruby
+./configure \
+  --prefix=${BOSH_INSTALL_TARGET} \
+  --disable-install-doc \
+  --enable-shared \
+  --with-openssl-dir=/usr
+
+# Build and install
+make -j$(nproc)
+make install
+
+# Install bundler
+${BOSH_INSTALL_TARGET}/bin/gem install bundler --no-document
+
+echo "Ruby ${RUBY_VERSION} installed successfully"

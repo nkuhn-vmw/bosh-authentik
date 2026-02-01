@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+# Create directories
+mkdir -p /var/vcap/store/authentik-service-broker/instances
+mkdir -p /var/vcap/sys/log/authentik-service-broker
+
+# Set ownership
+chown -R vcap:vcap /var/vcap/store/authentik-service-broker
+chown -R vcap:vcap /var/vcap/sys/log/authentik-service-broker
+
+echo "Service broker pre-start completed"

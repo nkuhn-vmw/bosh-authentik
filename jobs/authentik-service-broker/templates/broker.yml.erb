@@ -1,0 +1,38 @@
+<%
+  # Determine Authentik URL from link or property
+  if_link('authentik') do |authentik|
+    authentik_host = authentik.instances.first.address
+    authentik_port = authentik.p('port')
+    authentik_url = "http://#{authentik_host}:#{authentik_port}"
+  end.else do
+    authentik_url = p('authentik.url')
+  end
+%>
+---
+broker:
+  port: <%= p('port') %>
+  username: <%= p('username') %>
+  password: <%= p('password') %>
+  log_level: <%= p('log_level') %>
+
+authentik:
+  url: <%= authentik_url %>
+  api_token: <%= p('authentik.api_token') %>
+  verify_ssl: <%= p('authentik.verify_ssl') %>
+
+service:
+  id: <%= p('service.id') %>
+  name: <%= p('service.name') %>
+  description: <%= p('service.description') %>
+  tags: <%= p('service.tags').to_json %>
+  bindable: <%= p('service.bindable') %>
+  plan_updateable: <%= p('service.plan_updateable') %>
+
+plans: <%= p('plans').to_json %>
+
+storage:
+  instance_data_path: <%= p('instance_data_path') %>
+
+cloud_foundry:
+  api_url: <%= p('cf.api_url') %>
+  skip_ssl_validation: <%= p('cf.skip_ssl_validation') %>

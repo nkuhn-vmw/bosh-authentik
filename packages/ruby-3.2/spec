@@ -1,0 +1,7 @@
+---
+name: ruby-3.2
+
+dependencies: []
+
+files:
+  - ruby/ruby-3.2.*.tar.gz

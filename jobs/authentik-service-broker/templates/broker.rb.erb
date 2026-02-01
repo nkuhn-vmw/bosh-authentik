@@ -1,0 +1,565 @@
+#!/var/vcap/packages/ruby-3.2/bin/ruby
+# Authentik Service Broker - Open Service Broker API Implementation
+# Provides on-demand Authentik tenant provisioning for Cloud Foundry
+
+require 'sinatra/base'
+require 'json'
+require 'yaml'
+require 'net/http'
+require 'uri'
+require 'securerandom'
+require 'fileutils'
+require 'logger'
+
+class AuthentikServiceBroker < Sinatra::Base
+  # Load configuration
+  CONFIG_PATH = ENV['BROKER_CONFIG'] || '/var/vcap/jobs/authentik-service-broker/config/broker.yml'
+  CATALOG_PATH = ENV['CATALOG_PATH'] || '/var/vcap/jobs/authentik-service-broker/config/catalog.json'
+
+  configure do
+    set :config, YAML.load_file(CONFIG_PATH)
+    set :catalog, JSON.parse(File.read(CATALOG_PATH))
+
+    log_level = settings.config.dig('broker', 'log_level') || 'info'
+    set :logger, Logger.new(STDOUT)
+    settings.logger.level = Logger.const_get(log_level.upcase)
+
+    set :instance_path, settings.config.dig('storage', 'instance_data_path') || '/var/vcap/store/authentik-service-broker/instances'
+    FileUtils.mkdir_p(settings.instance_path)
+  end
+
+  # Basic authentication
+  helpers do
+    def protected!
+      return if authorized?
+      headers['WWW-Authenticate'] = 'Basic realm="Service Broker"'
+      halt 401, { 'Content-Type' => 'application/json' }, { error: 'Unauthorized' }.to_json
+    end
+
+    def authorized?
+      @auth ||= Rack::Auth::Basic::Request.new(request.env)
+      expected_user = settings.config.dig('broker', 'username')
+      expected_pass = settings.config.dig('broker', 'password')
+      @auth.provided? && @auth.basic? && @auth.credentials == [expected_user, expected_pass]
+    end
+
+    def authentik_api(method, path, body = nil)
+      uri = URI("#{settings.config.dig('authentik', 'url')}/api/v3#{path}")
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == 'https'
+      http.verify_mode = settings.config.dig('authentik', 'verify_ssl') ? OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE
+
+      request = case method
+                when :get then Net::HTTP::Get.new(uri)
+                when :post then Net::HTTP::Post.new(uri)
+                when :put then Net::HTTP::Put.new(uri)
+                when :patch then Net::HTTP::Patch.new(uri)
+                when :delete then Net::HTTP::Delete.new(uri)
+                end
+
+      request['Authorization'] = "Bearer #{settings.config.dig('authentik', 'api_token')}"
+      request['Content-Type'] = 'application/json'
+      request['Accept'] = 'application/json'
+
+      request.body = body.to_json if body
+
+      response = http.request(request)
+
+      {
+        status: response.code.to_i,
+        body: response.body.empty? ? {} : JSON.parse(response.body)
+      }
+    rescue => e
+      settings.logger.error "Authentik API error: #{e.message}"
+      { status: 500, body: { error: e.message } }
+    end
+
+    def load_instance(instance_id)
+      path = File.join(settings.instance_path, "#{instance_id}.json")
+      return nil unless File.exist?(path)
+      JSON.parse(File.read(path))
+    end
+
+    def save_instance(instance_id, data)
+      path = File.join(settings.instance_path, "#{instance_id}.json")
+      File.write(path, JSON.pretty_generate(data))
+    end
+
+    def delete_instance(instance_id)
+      path = File.join(settings.instance_path, "#{instance_id}.json")
+      File.delete(path) if File.exist?(path)
+    end
+
+    def get_plan(plan_id)
+      settings.config['plans'].find { |p| p['id'] == plan_id }
+    end
+
+    def osbapi_version_check!
+      version = request.env['HTTP_X_BROKER_API_VERSION']
+      unless version && version.to_f >= 2.14
+        halt 412, { 'Content-Type' => 'application/json' },
+             { error: 'PreconditionFailed', description: 'X-Broker-API-Version header required (minimum 2.14)' }.to_json
+      end
+    end
+  end
+
+  before do
+    content_type 'application/json'
+    protected!
+    osbapi_version_check! unless request.path_info == '/health'
+  end
+
+  # Health check endpoint (no auth required)
+  get '/health' do
+    { status: 'ok', broker: 'authentik-service-broker' }.to_json
+  end
+
+  # GET /v2/catalog - Return service catalog
+  get '/v2/catalog' do
+    settings.logger.info "Catalog request received"
+    settings.catalog.to_json
+  end
+
+  # PUT /v2/service_instances/:instance_id - Provision service instance
+  put '/v2/service_instances/:instance_id' do
+    instance_id = params[:instance_id]
+    accepts_incomplete = params[:accepts_incomplete] == 'true'
+
+    begin
+      request_body = JSON.parse(request.body.read)
+    rescue JSON::ParserError
+      halt 400, { error: 'BadRequest', description: 'Invalid JSON' }.to_json
+    end
+
+    service_id = request_body['service_id']
+    plan_id = request_body['plan_id']
+    org_guid = request_body.dig('organization_guid') || request_body.dig('context', 'organization_guid')
+    space_guid = request_body.dig('space_guid') || request_body.dig('context', 'space_guid')
+    parameters = request_body['parameters'] || {}
+
+    settings.logger.info "Provisioning instance #{instance_id} with plan #{plan_id}"
+
+    # Check if instance already exists
+    existing = load_instance(instance_id)
+    if existing
+      if existing['plan_id'] == plan_id && existing['service_id'] == service_id
+        status 200
+        return { dashboard_url: existing['dashboard_url'] }.to_json
+      else
+        halt 409, { error: 'Conflict', description: 'Instance already exists with different parameters' }.to_json
+      end
+    end
+
+    plan = get_plan(plan_id)
+    halt 400, { error: 'BadRequest', description: "Unknown plan: #{plan_id}" }.to_json unless plan
+
+    tenant_name = parameters['tenant_name'] || "cf-#{instance_id[0..7]}"
+    admin_email = parameters['admin_email'] || "admin@#{tenant_name}.local"
+
+    # Create tenant group in Authentik
+    group_response = authentik_api(:post, '/core/groups/', {
+      name: "tenant-#{tenant_name}",
+      is_superuser: false,
+      attributes: {
+        cf_instance_id: instance_id,
+        cf_org_guid: org_guid,
+        cf_space_guid: space_guid,
+        plan_id: plan_id,
+        max_users: plan['max_users'],
+        max_applications: plan['max_applications']
+      }
+    })
+
+    if group_response[:status] >= 400
+      settings.logger.error "Failed to create tenant group: #{group_response[:body]}"
+      halt 500, { error: 'InternalError', description: 'Failed to create tenant in Authentik' }.to_json
+    end
+
+    group_id = group_response[:body]['pk']
+
+    # Create default authorization flow for this tenant
+    flow_response = authentik_api(:post, '/flows/instances/', {
+      name: "#{tenant_name}-authorization",
+      slug: "#{tenant_name}-authorization",
+      title: "#{tenant_name} Authorization",
+      designation: 'authorization',
+      policy_engine_mode: 'any',
+      compatibility_mode: false
+    })
+
+    flow_slug = flow_response[:status] < 400 ? flow_response[:body]['slug'] : 'default-provider-authorization-implicit-consent'
+
+    # Create OAuth2 provider template for this tenant
+    provider_response = authentik_api(:post, '/providers/oauth2/', {
+      name: "#{tenant_name}-oauth2-template",
+      authorization_flow: flow_slug,
+      client_type: 'confidential',
+      client_id: "template-#{instance_id[0..15]}",
+      client_secret: SecureRandom.hex(32),
+      redirect_uris: "https://placeholder.example.com/callback",
+      signing_key: nil,
+      access_code_validity: 'minutes=1',
+      access_token_validity: 'minutes=5',
+      refresh_token_validity: 'days=30',
+      include_claims_in_id_token: true,
+      sub_mode: 'hashed_user_id',
+      issuer_mode: 'per_provider'
+    })
+
+    authentik_url = settings.config.dig('authentik', 'url')
+    dashboard_url = "#{authentik_url}/if/admin/#/core/tenants"
+
+    # Save instance data
+    instance_data = {
+      instance_id: instance_id,
+      service_id: service_id,
+      plan_id: plan_id,
+      org_guid: org_guid,
+      space_guid: space_guid,
+      tenant_name: tenant_name,
+      admin_email: admin_email,
+      group_id: group_id,
+      flow_slug: flow_slug,
+      provider_id: provider_response[:status] < 400 ? provider_response[:body]['pk'] : nil,
+      dashboard_url: dashboard_url,
+      created_at: Time.now.utc.iso8601,
+      bindings: {}
+    }
+    save_instance(instance_id, instance_data)
+
+    settings.logger.info "Successfully provisioned instance #{instance_id}"
+
+    status 201
+    {
+      dashboard_url: dashboard_url,
+      operation: instance_id
+    }.to_json
+  end
+
+  # GET /v2/service_instances/:instance_id - Fetch service instance
+  get '/v2/service_instances/:instance_id' do
+    instance_id = params[:instance_id]
+    instance = load_instance(instance_id)
+
+    halt 404, { error: 'NotFound', description: 'Instance not found' }.to_json unless instance
+
+    {
+      service_id: instance['service_id'],
+      plan_id: instance['plan_id'],
+      dashboard_url: instance['dashboard_url'],
+      parameters: {
+        tenant_name: instance['tenant_name'],
+        admin_email: instance['admin_email']
+      }
+    }.to_json
+  end
+
+  # PATCH /v2/service_instances/:instance_id - Update service instance
+  patch '/v2/service_instances/:instance_id' do
+    instance_id = params[:instance_id]
+    instance = load_instance(instance_id)
+
+    halt 404, { error: 'NotFound', description: 'Instance not found' }.to_json unless instance
+
+    begin
+      request_body = JSON.parse(request.body.read)
+    rescue JSON::ParserError
+      halt 400, { error: 'BadRequest', description: 'Invalid JSON' }.to_json
+    end
+
+    new_plan_id = request_body['plan_id']
+    parameters = request_body['parameters'] || {}
+
+    if new_plan_id && new_plan_id != instance['plan_id']
+      new_plan = get_plan(new_plan_id)
+      halt 400, { error: 'BadRequest', description: "Unknown plan: #{new_plan_id}" }.to_json unless new_plan
+
+      # Update group attributes with new plan limits
+      if instance['group_id']
+        authentik_api(:patch, "/core/groups/#{instance['group_id']}/", {
+          attributes: {
+            cf_instance_id: instance_id,
+            plan_id: new_plan_id,
+            max_users: new_plan['max_users'],
+            max_applications: new_plan['max_applications']
+          }
+        })
+      end
+
+      instance['plan_id'] = new_plan_id
+    end
+
+    # Update other parameters
+    instance['admin_email'] = parameters['admin_email'] if parameters['admin_email']
+    instance['updated_at'] = Time.now.utc.iso8601
+
+    save_instance(instance_id, instance)
+
+    settings.logger.info "Updated instance #{instance_id}"
+
+    {}.to_json
+  end
+
+  # DELETE /v2/service_instances/:instance_id - Deprovision service instance
+  delete '/v2/service_instances/:instance_id' do
+    instance_id = params[:instance_id]
+    service_id = params[:service_id]
+    plan_id = params[:plan_id]
+
+    instance = load_instance(instance_id)
+
+    # If instance doesn't exist, return 410 Gone
+    unless instance
+      status 410
+      return {}.to_json
+    end
+
+    settings.logger.info "Deprovisioning instance #{instance_id}"
+
+    # Delete all bindings first
+    instance['bindings'].each do |binding_id, binding_data|
+      if binding_data['provider_id']
+        authentik_api(:delete, "/providers/oauth2/#{binding_data['provider_id']}/")
+      end
+      if binding_data['application_id']
+        authentik_api(:delete, "/core/applications/#{binding_data['application_id']}/")
+      end
+    end
+
+    # Delete the template provider
+    if instance['provider_id']
+      authentik_api(:delete, "/providers/oauth2/#{instance['provider_id']}/")
+    end
+
+    # Delete the authorization flow if we created one
+    if instance['flow_slug'] && !instance['flow_slug'].start_with?('default-')
+      authentik_api(:delete, "/flows/instances/#{instance['flow_slug']}/")
+    end
+
+    # Delete the tenant group
+    if instance['group_id']
+      authentik_api(:delete, "/core/groups/#{instance['group_id']}/")
+    end
+
+    delete_instance(instance_id)
+
+    settings.logger.info "Successfully deprovisioned instance #{instance_id}"
+
+    {}.to_json
+  end
+
+  # PUT /v2/service_instances/:instance_id/service_bindings/:binding_id - Create binding
+  put '/v2/service_instances/:instance_id/service_bindings/:binding_id' do
+    instance_id = params[:instance_id]
+    binding_id = params[:binding_id]
+
+    instance = load_instance(instance_id)
+    halt 404, { error: 'NotFound', description: 'Instance not found' }.to_json unless instance
+
+    begin
+      request_body = JSON.parse(request.body.read)
+    rescue JSON::ParserError
+      halt 400, { error: 'BadRequest', description: 'Invalid JSON' }.to_json
+    end
+
+    parameters = request_body['parameters'] || {}
+    bind_resource = request_body['bind_resource'] || {}
+
+    settings.logger.info "Creating binding #{binding_id} for instance #{instance_id}"
+
+    # Check if binding already exists
+    if instance['bindings'][binding_id]
+      existing = instance['bindings'][binding_id]
+      status 200
+      return {
+        credentials: existing['credentials']
+      }.to_json
+    end
+
+    # Check plan limits
+    plan = get_plan(instance['plan_id'])
+    max_apps = plan['max_applications'] || -1
+    if max_apps > 0 && instance['bindings'].size >= max_apps
+      halt 422, { error: 'QuotaExceeded', description: "Plan limit of #{max_apps} applications reached" }.to_json
+    end
+
+    app_name = parameters['application_name'] || bind_resource['app_guid'] || "app-#{binding_id[0..7]}"
+    protocol = parameters['protocol'] || 'oauth2'
+    redirect_uris = parameters['redirect_uris'] || ["https://#{app_name}.apps.internal/callback"]
+    grant_types = parameters['grant_types'] || ['authorization_code', 'refresh_token']
+    scopes = parameters['scopes'] || ['openid', 'profile', 'email']
+
+    client_id = "cf-#{binding_id}"
+    client_secret = SecureRandom.hex(32)
+
+    authentik_url = settings.config.dig('authentik', 'url')
+
+    # Create OAuth2 Provider in Authentik
+    provider_response = authentik_api(:post, '/providers/oauth2/', {
+      name: "#{instance['tenant_name']}-#{app_name}",
+      authorization_flow: instance['flow_slug'] || 'default-provider-authorization-implicit-consent',
+      client_type: 'confidential',
+      client_id: client_id,
+      client_secret: client_secret,
+      redirect_uris: redirect_uris.join("\n"),
+      signing_key: nil,
+      access_code_validity: 'minutes=1',
+      access_token_validity: 'minutes=5',
+      refresh_token_validity: 'days=30',
+      include_claims_in_id_token: true,
+      sub_mode: 'hashed_user_id',
+      issuer_mode: 'per_provider',
+      property_mappings: []
+    })
+
+    if provider_response[:status] >= 400
+      settings.logger.error "Failed to create OAuth2 provider: #{provider_response[:body]}"
+      halt 500, { error: 'InternalError', description: 'Failed to create OAuth2 provider' }.to_json
+    end
+
+    provider_id = provider_response[:body]['pk']
+
+    # Create Application in Authentik
+    app_response = authentik_api(:post, '/core/applications/', {
+      name: app_name,
+      slug: "#{instance['tenant_name']}-#{app_name}".downcase.gsub(/[^a-z0-9-]/, '-'),
+      provider: provider_id,
+      meta_launch_url: redirect_uris.first&.gsub('/callback', '') || '',
+      open_in_new_tab: true,
+      group: instance['group_id']
+    })
+
+    application_id = app_response[:status] < 400 ? app_response[:body]['pk'] : nil
+
+    # Build credentials
+    credentials = {
+      client_id: client_id,
+      client_secret: client_secret,
+      authorization_endpoint: "#{authentik_url}/application/o/authorize/",
+      token_endpoint: "#{authentik_url}/application/o/token/",
+      userinfo_endpoint: "#{authentik_url}/application/o/userinfo/",
+      jwks_uri: "#{authentik_url}/application/o/#{instance['tenant_name']}-#{app_name}/jwks/".downcase.gsub(/[^a-z0-9\/-]/, '-'),
+      issuer: "#{authentik_url}/application/o/#{instance['tenant_name']}-#{app_name}/".downcase.gsub(/[^a-z0-9\/-]/, '-'),
+      redirect_uris: redirect_uris,
+      grant_types: grant_types,
+      scopes: scopes,
+      authentik_url: authentik_url,
+      tenant_name: instance['tenant_name']
+    }
+
+    # SAML credentials if requested
+    if protocol == 'saml'
+      credentials[:saml] = {
+        metadata_url: "#{authentik_url}/application/saml/#{instance['tenant_name']}-#{app_name}/metadata/".downcase.gsub(/[^a-z0-9\/-]/, '-'),
+        sso_url: "#{authentik_url}/application/saml/#{instance['tenant_name']}-#{app_name}/sso/binding/redirect/".downcase.gsub(/[^a-z0-9\/-]/, '-'),
+        entity_id: "#{authentik_url}/application/saml/#{instance['tenant_name']}-#{app_name}/".downcase.gsub(/[^a-z0-9\/-]/, '-')
+      }
+    end
+
+    # Save binding data
+    instance['bindings'][binding_id] = {
+      binding_id: binding_id,
+      app_name: app_name,
+      protocol: protocol,
+      provider_id: provider_id,
+      application_id: application_id,
+      credentials: credentials,
+      created_at: Time.now.utc.iso8601
+    }
+    save_instance(instance_id, instance)
+
+    settings.logger.info "Successfully created binding #{binding_id}"
+
+    status 201
+    { credentials: credentials }.to_json
+  end
+
+  # GET /v2/service_instances/:instance_id/service_bindings/:binding_id - Fetch binding
+  get '/v2/service_instances/:instance_id/service_bindings/:binding_id' do
+    instance_id = params[:instance_id]
+    binding_id = params[:binding_id]
+
+    instance = load_instance(instance_id)
+    halt 404, { error: 'NotFound', description: 'Instance not found' }.to_json unless instance
+
+    binding = instance['bindings'][binding_id]
+    halt 404, { error: 'NotFound', description: 'Binding not found' }.to_json unless binding
+
+    {
+      credentials: binding['credentials'],
+      parameters: {
+        application_name: binding['app_name'],
+        protocol: binding['protocol']
+      }
+    }.to_json
+  end
+
+  # DELETE /v2/service_instances/:instance_id/service_bindings/:binding_id - Delete binding
+  delete '/v2/service_instances/:instance_id/service_bindings/:binding_id' do
+    instance_id = params[:instance_id]
+    binding_id = params[:binding_id]
+
+    instance = load_instance(instance_id)
+
+    # If instance doesn't exist, return 410 Gone
+    unless instance
+      status 410
+      return {}.to_json
+    end
+
+    binding = instance['bindings'][binding_id]
+
+    # If binding doesn't exist, return 410 Gone
+    unless binding
+      status 410
+      return {}.to_json
+    end
+
+    settings.logger.info "Deleting binding #{binding_id} from instance #{instance_id}"
+
+    # Delete application first, then provider
+    if binding['application_id']
+      authentik_api(:delete, "/core/applications/#{binding['application_id']}/")
+    end
+
+    if binding['provider_id']
+      authentik_api(:delete, "/providers/oauth2/#{binding['provider_id']}/")
+    end
+
+    instance['bindings'].delete(binding_id)
+    save_instance(instance_id, instance)
+
+    settings.logger.info "Successfully deleted binding #{binding_id}"
+
+    {}.to_json
+  end
+
+  # GET /v2/service_instances/:instance_id/last_operation - Poll for operation status
+  get '/v2/service_instances/:instance_id/last_operation' do
+    instance_id = params[:instance_id]
+    operation = params[:operation]
+
+    instance = load_instance(instance_id)
+
+    if instance
+      { state: 'succeeded', description: 'Instance provisioned successfully' }.to_json
+    else
+      { state: 'failed', description: 'Instance not found' }.to_json
+    end
+  end
+
+  # Error handlers
+  error do
+    settings.logger.error "Error: #{env['sinatra.error'].message}"
+    status 500
+    { error: 'InternalServerError', description: env['sinatra.error'].message }.to_json
+  end
+
+  not_found do
+    { error: 'NotFound', description: 'Endpoint not found' }.to_json
+  end
+
+  # Start the server
+  run! host: '0.0.0.0', port: settings.config.dig('broker', 'port') || 8080
+end

@@ -1,0 +1,19 @@
+processes:
+  - name: authentik-service-broker
+    executable: /var/vcap/packages/ruby-3.2/bin/ruby
+    args:
+      - /var/vcap/jobs/authentik-service-broker/bin/broker.rb
+    env:
+      BUNDLE_GEMFILE: /var/vcap/packages/service-broker/Gemfile
+      GEM_HOME: /var/vcap/packages/service-broker/vendor/bundle/ruby/3.2.0
+      GEM_PATH: /var/vcap/packages/service-broker/vendor/bundle/ruby/3.2.0
+      PATH: /var/vcap/packages/ruby-3.2/bin:$PATH
+      BROKER_CONFIG: /var/vcap/jobs/authentik-service-broker/config/broker.yml
+      CATALOG_PATH: /var/vcap/jobs/authentik-service-broker/config/catalog.json
+    limits:
+      memory: 256MB
+      open_files: 1024
+    persistent_disk: true
+    additional_volumes:
+      - path: /var/vcap/store/authentik-service-broker
+        writable: true

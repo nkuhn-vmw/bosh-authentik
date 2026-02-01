@@ -1,0 +1,21 @@
+#!/bin/bash
+set -e -x
+
+# Set up Ruby paths
+export PATH=/var/vcap/packages/ruby-3.2/bin:$PATH
+export GEM_HOME=${BOSH_INSTALL_TARGET}/vendor/bundle/ruby/3.2.0
+export GEM_PATH=${GEM_HOME}
+
+mkdir -p ${GEM_HOME}
+
+# Copy Gemfile
+cp -r service-broker/* ${BOSH_INSTALL_TARGET}/
+
+cd ${BOSH_INSTALL_TARGET}
+
+# Install gems
+bundle config set --local path vendor/bundle
+bundle config set --local without 'development test'
+bundle install --jobs 4
+
+echo "Service broker package installed successfully"

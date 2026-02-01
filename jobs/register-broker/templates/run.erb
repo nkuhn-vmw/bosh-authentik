@@ -1,0 +1,96 @@
+#!/bin/bash
+set -e
+
+echo "=== Authentik Service Broker Registration ==="
+
+CF_API_URL="<%= p('cf.api_url') %>"
+CF_USERNAME="<%= p('cf.admin_username') %>"
+CF_PASSWORD="<%= p('cf.admin_password') %>"
+CF_SKIP_SSL="<%= p('cf.skip_ssl_validation') %>"
+
+BROKER_NAME="<%= p('broker.name') %>"
+BROKER_USERNAME="<%= p('broker.username') %>"
+BROKER_PASSWORD="<%= p('broker.password') %>"
+ENABLE_GLOBAL_ACCESS="<%= p('broker.enable_global_access') %>"
+
+<%
+  # Determine broker URL from link or property
+  if_link('service-broker') do |broker|
+    broker_host = broker.instances.first.address
+    broker_port = broker.p('port')
+    broker_url = "http://#{broker_host}:#{broker_port}"
+  end.else do
+    broker_url = p('broker.url')
+  end
+%>
+BROKER_URL="<%= broker_url %>"
+
+if [ -z "$CF_API_URL" ]; then
+  echo "ERROR: Cloud Foundry API URL not configured"
+  exit 1
+fi
+
+if [ -z "$BROKER_URL" ]; then
+  echo "ERROR: Service broker URL not configured and not available from link"
+  exit 1
+fi
+
+echo "CF API URL: $CF_API_URL"
+echo "Broker Name: $BROKER_NAME"
+echo "Broker URL: $BROKER_URL"
+
+# Check if cf CLI is available
+if ! command -v cf &> /dev/null; then
+  echo "Installing CF CLI..."
+  curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github" | tar -zx -C /tmp
+  export PATH="/tmp:$PATH"
+fi
+
+# Login to Cloud Foundry
+echo "Logging into Cloud Foundry..."
+SSL_FLAG=""
+if [ "$CF_SKIP_SSL" = "true" ]; then
+  SSL_FLAG="--skip-ssl-validation"
+fi
+
+cf api "$CF_API_URL" $SSL_FLAG
+cf auth "$CF_USERNAME" "$CF_PASSWORD"
+
+# Check if broker already exists
+echo "Checking for existing service broker..."
+if cf service-brokers | grep -q "^$BROKER_NAME "; then
+  echo "Service broker '$BROKER_NAME' already exists, updating..."
+  cf update-service-broker "$BROKER_NAME" "$BROKER_USERNAME" "$BROKER_PASSWORD" "$BROKER_URL"
+else
+  echo "Creating service broker '$BROKER_NAME'..."
+  cf create-service-broker "$BROKER_NAME" "$BROKER_USERNAME" "$BROKER_PASSWORD" "$BROKER_URL"
+fi
+
+# Enable service access if requested
+if [ "$ENABLE_GLOBAL_ACCESS" = "true" ]; then
+  echo "Enabling global service access..."
+
+  # Get all service plans for this broker
+  SERVICES=$(cf curl "/v3/service_offerings?service_broker_names=$BROKER_NAME" | jq -r '.resources[].guid')
+
+  for SERVICE_GUID in $SERVICES; do
+    PLANS=$(cf curl "/v3/service_plans?service_offering_guids=$SERVICE_GUID" | jq -r '.resources[].name')
+    SERVICE_NAME=$(cf curl "/v3/service_offerings/$SERVICE_GUID" | jq -r '.name')
+
+    for PLAN in $PLANS; do
+      echo "Enabling access for $SERVICE_NAME / $PLAN..."
+      cf enable-service-access "$SERVICE_NAME" -p "$PLAN" 2>/dev/null || true
+    done
+  done
+fi
+
+echo ""
+echo "=== Service Broker Registration Complete ==="
+echo ""
+echo "The Authentik service is now available in the Cloud Foundry marketplace."
+echo "Users can create service instances with:"
+echo "  cf create-service authentik starter my-authentik"
+echo ""
+echo "And bind to applications with:"
+echo "  cf bind-service my-app my-authentik"
+echo ""

@@ -1,0 +1,48 @@
+#!/bin/bash
+set -e
+
+echo "=== Authentik Service Broker Deregistration ==="
+
+CF_API_URL="<%= p('cf.api_url') %>"
+CF_USERNAME="<%= p('cf.admin_username') %>"
+CF_PASSWORD="<%= p('cf.admin_password') %>"
+CF_SKIP_SSL="<%= p('cf.skip_ssl_validation') %>"
+BROKER_NAME="<%= p('broker.name') %>"
+
+if [ -z "$CF_API_URL" ]; then
+  echo "WARNING: Cloud Foundry API URL not configured, skipping broker deregistration"
+  exit 0
+fi
+
+echo "CF API URL: $CF_API_URL"
+echo "Broker Name: $BROKER_NAME"
+
+# Check if cf CLI is available
+if ! command -v cf &> /dev/null; then
+  echo "Installing CF CLI..."
+  curl -L "https://packages.cloudfoundry.org/stable?release=linux64-binary&version=v8&source=github" | tar -zx -C /tmp
+  export PATH="/tmp:$PATH"
+fi
+
+# Login to Cloud Foundry
+echo "Logging into Cloud Foundry..."
+SSL_FLAG=""
+if [ "$CF_SKIP_SSL" = "true" ]; then
+  SSL_FLAG="--skip-ssl-validation"
+fi
+
+cf api "$CF_API_URL" $SSL_FLAG
+cf auth "$CF_USERNAME" "$CF_PASSWORD"
+
+# Check if broker exists
+echo "Checking for service broker..."
+if cf service-brokers | grep -q "^$BROKER_NAME "; then
+  echo "Deleting service broker '$BROKER_NAME'..."
+  cf delete-service-broker "$BROKER_NAME" -f
+  echo "Service broker '$BROKER_NAME' has been deleted."
+else
+  echo "Service broker '$BROKER_NAME' not found, nothing to delete."
+fi
+
+echo ""
+echo "=== Service Broker Deregistration Complete ==="

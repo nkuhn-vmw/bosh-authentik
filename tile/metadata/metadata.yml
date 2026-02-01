@@ -30,8 +30,14 @@ post_deploy_errands:
   - name: smoke-tests
     label: Smoke Tests
     description: Run basic health checks on Authentik deployment
+  - name: register-broker
+    label: Register Service Broker
+    description: Register the Authentik service broker with Cloud Foundry (requires CF integration configuration)
 
-pre_delete_errands: []
+pre_delete_errands:
+  - name: deregister-broker
+    label: Deregister Service Broker
+    description: Remove the Authentik service broker from Cloud Foundry
 
 form_types:
   #############################################
@@ -220,6 +226,61 @@ form_types:
       - reference: .properties.outpost_insecure
         label: Skip TLS Verification
         description: Skip TLS verification when outposts connect to authentik
+
+  #############################################
+  # Service Broker Configuration
+  #############################################
+  - name: service_broker_config
+    label: Service Broker (Cloud Foundry Marketplace)
+    description: Configure the Open Service Broker for Cloud Foundry marketplace integration
+    property_inputs:
+      - reference: .properties.enable_service_broker
+        label: Enable Service Broker
+        description: Enable the service broker for Cloud Foundry marketplace integration
+      - reference: .properties.broker_port
+        label: Broker Port
+        description: HTTP port for the service broker API
+      - reference: .properties.broker_username
+        label: Broker Username
+        description: Basic auth username for the broker API
+      - reference: .properties.broker_password
+        label: Broker Password
+        description: Basic auth password for the broker API
+      - reference: .properties.broker_api_token
+        label: Authentik API Token
+        description: API token for the broker to manage Authentik resources (create in Authentik admin UI)
+      - reference: .properties.broker_verify_ssl
+        label: Verify SSL
+        description: Verify SSL certificates when connecting to Authentik
+      - reference: .properties.broker_service_name
+        label: Service Name
+        description: Name displayed in the Cloud Foundry marketplace
+      - reference: .properties.broker_service_description
+        label: Service Description
+        description: Description displayed in the marketplace
+
+  #############################################
+  # Cloud Foundry Integration
+  #############################################
+  - name: cf_integration_config
+    label: Cloud Foundry Integration
+    description: Cloud Foundry API settings for service broker registration
+    property_inputs:
+      - reference: .properties.cf_api_url
+        label: Cloud Foundry API URL
+        description: URL of the Cloud Foundry API (e.g., https://api.sys.example.com)
+      - reference: .properties.cf_admin_username
+        label: CF Admin Username
+        description: Cloud Foundry admin username for broker registration
+      - reference: .properties.cf_admin_password
+        label: CF Admin Password
+        description: Cloud Foundry admin password for broker registration
+      - reference: .properties.cf_skip_ssl_validation
+        label: Skip SSL Validation
+        description: Skip SSL certificate validation for CF API
+      - reference: .properties.broker_enable_global_access
+        label: Enable Global Access
+        description: Make service plans available to all orgs (otherwise manually enable per org)
 
 property_blueprints:
   #############################################
@@ -522,6 +583,143 @@ property_blueprints:
     type: secret
     constraints:
       length: 64
+
+  #############################################
+  # Service Broker Properties
+  #############################################
+  - name: enable_service_broker
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: broker_port
+    type: port
+    configurable: true
+    default: 8080
+
+  - name: broker_username
+    type: string
+    configurable: true
+    default: "broker"
+
+  - name: broker_password
+    type: secret
+    configurable: true
+
+  - name: broker_api_token
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: broker_verify_ssl
+    type: boolean
+    configurable: true
+    default: true
+
+  - name: broker_service_id
+    type: string
+    configurable: true
+    default: "authentik-identity-provider"
+
+  - name: broker_service_name
+    type: string
+    configurable: true
+    default: "authentik"
+
+  - name: broker_service_description
+    type: string
+    configurable: true
+    default: "Authentik Identity Provider - SSO, OAuth2, SAML, LDAP"
+
+  - name: broker_service_tags
+    type: string_list
+    configurable: true
+    default:
+      - identity
+      - sso
+      - oauth2
+      - saml
+      - oidc
+      - authentication
+
+  - name: broker_plans
+    type: collection
+    configurable: true
+    optional: true
+    property_blueprints:
+      - name: id
+        type: string
+        configurable: true
+      - name: name
+        type: string
+        configurable: true
+      - name: description
+        type: string
+        configurable: true
+      - name: free
+        type: boolean
+        configurable: true
+        default: false
+      - name: max_users
+        type: integer
+        configurable: true
+        default: 100
+      - name: max_applications
+        type: integer
+        configurable: true
+        default: 5
+    default:
+      - id: "authentik-starter"
+        name: "starter"
+        description: "Starter plan - Up to 100 users, 5 applications"
+        free: true
+        max_users: 100
+        max_applications: 5
+      - id: "authentik-professional"
+        name: "professional"
+        description: "Professional plan - Up to 1000 users, 25 applications"
+        free: false
+        max_users: 1000
+        max_applications: 25
+      - id: "authentik-enterprise"
+        name: "enterprise"
+        description: "Enterprise plan - Unlimited users and applications"
+        free: false
+        max_users: -1
+        max_applications: -1
+
+  - name: broker_enable_global_access
+    type: boolean
+    configurable: true
+    default: true
+
+  #############################################
+  # Cloud Foundry Integration Properties
+  #############################################
+  - name: cf_api_url
+    type: string
+    configurable: true
+    optional: true
+
+  - name: cf_admin_username
+    type: string
+    configurable: true
+    default: "admin"
+
+  - name: cf_admin_password
+    type: secret
+    configurable: true
+    optional: true
+
+  - name: cf_skip_ssl_validation
+    type: boolean
+    configurable: true
+    default: false
+
+  - name: generated_broker_password
+    type: secret
+    constraints:
+      length: 32
 
 job_types:
   #############################################
@@ -1029,3 +1227,188 @@ job_types:
       authentik:
         host: ""
         port: (( .properties.http_port.value ))
+
+  #############################################
+  # Service Broker (for Cloud Foundry Marketplace)
+  #############################################
+  - name: authentik-service-broker
+    resource_label: Service Broker
+    description: Open Service Broker API for Cloud Foundry marketplace integration
+    errand: false
+    templates:
+      - name: bpm
+        release: bpm
+      - name: authentik-service-broker
+        release: authentik
+        consumes:
+          authentik:
+            from: authentik
+            optional: true
+        provides:
+          service-broker:
+            as: service-broker
+            shared: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: true
+        default: 512
+        constraints:
+          min: 256
+      - name: ephemeral_disk
+        type: integer
+        configurable: true
+        default: 4096
+        constraints:
+          min: 2048
+      - name: persistent_disk
+        type: integer
+        configurable: true
+        default: 1024
+        constraints:
+          min: 512
+      - name: cpu
+        type: integer
+        configurable: true
+        default: 1
+        constraints:
+          min: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: true
+      default: 0
+      constraints:
+        min: 0
+        max: 2
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      port: (( .properties.broker_port.value ))
+      username: (( .properties.broker_username.value ))
+      password: (( .properties.broker_password.value ))
+      authentik:
+        url: ""
+        api_token: (( .properties.broker_api_token.value ))
+        verify_ssl: (( .properties.broker_verify_ssl.value ))
+      service:
+        id: (( .properties.broker_service_id.value ))
+        name: (( .properties.broker_service_name.value ))
+        description: (( .properties.broker_service_description.value ))
+        tags: (( .properties.broker_service_tags.value ))
+        bindable: true
+        plan_updateable: true
+      plans: (( .properties.broker_plans.value ))
+      log_level: (( .properties.log_level.value ))
+
+  #############################################
+  # Register Service Broker Errand
+  #############################################
+  - name: register-broker
+    resource_label: Register Service Broker
+    description: Registers the service broker with Cloud Foundry
+    errand: true
+    templates:
+      - name: register-broker
+        release: authentik
+        consumes:
+          service-broker:
+            from: service-broker
+            optional: true
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: false
+        default: 512
+      - name: ephemeral_disk
+        type: integer
+        configurable: false
+        default: 2048
+      - name: persistent_disk
+        type: integer
+        configurable: false
+        default: 0
+      - name: cpu
+        type: integer
+        configurable: false
+        default: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: false
+      default: 1
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      cf:
+        api_url: (( .properties.cf_api_url.value ))
+        admin_username: (( .properties.cf_admin_username.value ))
+        admin_password: (( .properties.cf_admin_password.value ))
+        skip_ssl_validation: (( .properties.cf_skip_ssl_validation.value ))
+      broker:
+        name: authentik
+        url: ""
+        username: (( .properties.broker_username.value ))
+        password: (( .properties.broker_password.value ))
+        enable_global_access: (( .properties.broker_enable_global_access.value ))
+
+  #############################################
+  # Deregister Service Broker Errand
+  #############################################
+  - name: deregister-broker
+    resource_label: Deregister Service Broker
+    description: Removes the service broker from Cloud Foundry
+    errand: true
+    templates:
+      - name: deregister-broker
+        release: authentik
+    resource_definitions:
+      - name: ram
+        type: integer
+        configurable: false
+        default: 512
+      - name: ephemeral_disk
+        type: integer
+        configurable: false
+        default: 2048
+      - name: persistent_disk
+        type: integer
+        configurable: false
+        default: 0
+      - name: cpu
+        type: integer
+        configurable: false
+        default: 1
+    instance_definition:
+      name: instances
+      type: integer
+      configurable: false
+      default: 1
+    static_ip: 0
+    dynamic_ip: 1
+    max_in_flight: 1
+    property_blueprints:
+      - name: vm_credentials
+        type: salted_credentials
+        default:
+          identity: vcap
+    manifest: |
+      cf:
+        api_url: (( .properties.cf_api_url.value ))
+        admin_username: (( .properties.cf_admin_username.value ))
+        admin_password: (( .properties.cf_admin_password.value ))
+        skip_ssl_validation: (( .properties.cf_skip_ssl_validation.value ))
+      broker:
+        name: authentik

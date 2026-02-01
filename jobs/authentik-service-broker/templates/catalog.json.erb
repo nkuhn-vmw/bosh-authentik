@@ -1,0 +1,150 @@
+<%=
+require 'json'
+
+service_id = p('service.id')
+service_name = p('service.name')
+service_description = p('service.description')
+service_tags = p('service.tags')
+bindable = p('service.bindable')
+plan_updateable = p('service.plan_updateable')
+plans_config = p('plans')
+
+catalog = {
+  "services" => [
+    {
+      "id" => service_id,
+      "name" => service_name,
+      "description" => service_description,
+      "tags" => service_tags,
+      "bindable" => bindable,
+      "plan_updateable" => plan_updateable,
+      "instances_retrievable" => true,
+      "bindings_retrievable" => true,
+      "metadata" => {
+        "displayName" => "Authentik Identity Provider",
+        "imageUrl" => "https://goauthentik.io/img/icon.png",
+        "longDescription" => "Authentik is an open-source Identity Provider focused on flexibility and versatility. It supports multiple protocols including SAML 2.0, OAuth 2.0/OIDC, LDAP, RADIUS, and forward authentication proxy.",
+        "providerDisplayName" => "Authentik",
+        "documentationUrl" => "https://goauthentik.io/docs/",
+        "supportUrl" => "https://github.com/goauthentik/authentik/issues"
+      },
+      "dashboard_client" => {
+        "id" => "#{service_id}-dashboard",
+        "secret" => "",
+        "redirect_uri" => ""
+      },
+      "plans" => plans_config.map do |plan|
+        {
+          "id" => plan['id'],
+          "name" => plan['name'],
+          "description" => plan['description'],
+          "free" => plan.fetch('free', false),
+          "bindable" => true,
+          "metadata" => plan.fetch('metadata', {}),
+          "schemas" => {
+            "service_instance" => {
+              "create" => {
+                "parameters" => {
+                  "$schema" => "http://json-schema.org/draft-04/schema#",
+                  "type" => "object",
+                  "properties" => {
+                    "tenant_name" => {
+                      "type" => "string",
+                      "description" => "Name for the Authentik tenant (defaults to service instance ID)"
+                    },
+                    "admin_email" => {
+                      "type" => "string",
+                      "format" => "email",
+                      "description" => "Email address for the tenant administrator"
+                    },
+                    "default_flow" => {
+                      "type" => "string",
+                      "enum" => ["default", "passwordless", "mfa-required"],
+                      "description" => "Default authentication flow type"
+                    },
+                    "branding" => {
+                      "type" => "object",
+                      "properties" => {
+                        "title" => {
+                          "type" => "string",
+                          "description" => "Custom title for login pages"
+                        },
+                        "logo_url" => {
+                          "type" => "string",
+                          "format" => "uri",
+                          "description" => "URL to custom logo"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "update" => {
+                "parameters" => {
+                  "$schema" => "http://json-schema.org/draft-04/schema#",
+                  "type" => "object",
+                  "properties" => {
+                    "admin_email" => {
+                      "type" => "string",
+                      "format" => "email"
+                    },
+                    "branding" => {
+                      "type" => "object",
+                      "properties" => {
+                        "title" => {"type" => "string"},
+                        "logo_url" => {"type" => "string", "format" => "uri"}
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "service_binding" => {
+              "create" => {
+                "parameters" => {
+                  "$schema" => "http://json-schema.org/draft-04/schema#",
+                  "type" => "object",
+                  "properties" => {
+                    "application_name" => {
+                      "type" => "string",
+                      "description" => "Name for the OAuth2/OIDC application"
+                    },
+                    "protocol" => {
+                      "type" => "string",
+                      "enum" => ["oauth2", "saml"],
+                      "default" => "oauth2",
+                      "description" => "Authentication protocol for this binding"
+                    },
+                    "redirect_uris" => {
+                      "type" => "array",
+                      "items" => {"type" => "string", "format" => "uri"},
+                      "description" => "Allowed redirect URIs for OAuth2 callbacks"
+                    },
+                    "grant_types" => {
+                      "type" => "array",
+                      "items" => {
+                        "type" => "string",
+                        "enum" => ["authorization_code", "client_credentials", "refresh_token", "implicit"]
+                      },
+                      "default" => ["authorization_code", "refresh_token"],
+                      "description" => "Allowed OAuth2 grant types"
+                    },
+                    "scopes" => {
+                      "type" => "array",
+                      "items" => {"type" => "string"},
+                      "default" => ["openid", "profile", "email"],
+                      "description" => "OAuth2 scopes to request"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      end
+    }
+  ]
+}
+
+JSON.pretty_generate(catalog)
+%>
